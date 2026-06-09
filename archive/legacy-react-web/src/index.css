@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { 
+  --accent: #0a0a0a; 
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+:root {
+  --radius: 18px;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
