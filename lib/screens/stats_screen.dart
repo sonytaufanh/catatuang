@@ -11,6 +11,7 @@ import '../services/app_ui_tokens.dart';
 import '../services/due_date_service.dart';
 import '../services/master_data_service.dart';
 import '../services/notification_service.dart';
+import '../widgets/category_budget_card.dart';
 import 'home/home_formatters.dart';
 import 'home/transaction_search_delegate.dart';
 
@@ -599,6 +600,33 @@ class _StatsScreenState extends State<StatsScreen> {
                                                 maxLines: 2,
                                                 overflow: TextOverflow.ellipsis,
                                               ),
+                                              const Spacer(),
+                                              GestureDetector(
+                                                onTap: () => showCategoryBudgetSheet(context),
+                                                child: Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                                                  decoration: BoxDecoration(
+                                                    color: AppUiTokens.surfaceBlueSoft,
+                                                    borderRadius: BorderRadius.circular(8),
+                                                    border: Border.all(color: AppUiTokens.brandBlueBorder),
+                                                  ),
+                                                  child: Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      const Icon(Icons.pie_chart_rounded, size: 10, color: AppUiTokens.brandBlue),
+                                                      const SizedBox(width: 3),
+                                                      Text(
+                                                        t.t('category_budget'),
+                                                        style: TextStyle(
+                                                          fontSize: compact ? 8 : 9,
+                                                          fontWeight: FontWeight.w700,
+                                                          color: AppUiTokens.brandBlue,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
                                             ],
                                           ),
                                         ),
@@ -876,6 +904,33 @@ class _StatsScreenState extends State<StatsScreen> {
                                                 ),
                                                 maxLines: compact ? 1 : 2,
                                                 overflow: TextOverflow.ellipsis,
+                                              ),
+                                              const Spacer(),
+                                              GestureDetector(
+                                                onTap: () => showCategoryBudgetSheet(context),
+                                                child: Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                                                  decoration: BoxDecoration(
+                                                    color: AppUiTokens.surfaceBlueSoft,
+                                                    borderRadius: BorderRadius.circular(8),
+                                                    border: Border.all(color: AppUiTokens.brandBlueBorder),
+                                                  ),
+                                                  child: Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      const Icon(Icons.pie_chart_rounded, size: 10, color: AppUiTokens.brandBlue),
+                                                      const SizedBox(width: 3),
+                                                      Text(
+                                                        t.t('category_budget'),
+                                                        style: TextStyle(
+                                                          fontSize: compact ? 8 : 9,
+                                                          fontWeight: FontWeight.w700,
+                                                          color: AppUiTokens.brandBlue,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
                                               ),
                                             ],
                                           ),

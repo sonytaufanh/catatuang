@@ -47,6 +47,10 @@ String homeCategoryLabel(AppLocalizations t, String key) {
     case 'gift':
     case 'hadiah':
       return t.t('category_gift');
+    case 'transfer_out':
+      return t.t('category_transfer_out');
+    case 'transfer_in':
+      return t.t('category_transfer_in');
     default:
       return key;
   }

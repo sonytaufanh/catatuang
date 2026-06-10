@@ -13,6 +13,7 @@ import '../services/master_data_service.dart';
 import 'add_transaction_screen.dart';
 import 'home/home_formatters.dart';
 import 'home/transaction_search_delegate.dart';
+import 'transfer_screen.dart';
 
 class WalletScreen extends StatefulWidget {
   const WalletScreen({super.key});
@@ -59,7 +60,7 @@ class _WalletScreenState extends State<WalletScreen> {
             return SafeArea(
               child: AnimatedFadeSlide(
                 child: SingleChildScrollView(
-                  physics: const NeverScrollableScrollPhysics(),
+                  physics: const AlwaysScrollableScrollPhysics(),
                   padding: EdgeInsets.fromLTRB(
                     compact ? AppUiTokens.space6 : AppUiTokens.space8,
                     compact ? AppUiTokens.space4 : AppUiTokens.space6,
@@ -242,6 +243,27 @@ class _WalletScreenState extends State<WalletScreen> {
                 decoration: _panelDecoration(context),
                 child: const Icon(
                   Icons.search_rounded,
+                  size: 18,
+                  color: AppUiTokens.brandBlueDark,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            PressableScale(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute<Object?>(
+                    builder: (_) => const TransferScreen(),
+                  ),
+                );
+              },
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: _panelDecoration(context),
+                child: const Icon(
+                  Icons.swap_horiz_rounded,
                   size: 18,
                   color: AppUiTokens.brandBlueDark,
                 ),
@@ -654,8 +676,7 @@ class _WalletScreenState extends State<WalletScreen> {
       );
     }
 
-    final limit = veryCompact ? 6 : (compact ? 8 : 10);
-    final limited = transactions.take(limit).toList(growable: false);
+    final limited = transactions;
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 4),
       decoration: BoxDecoration(
@@ -922,16 +943,38 @@ class _WalletScreenState extends State<WalletScreen> {
           reason: 'Verifikasi biometrik untuk menghapus transaksi',
         );
     if (!allowed) return;
-    await DatabaseService.instance.deleteTransaction(tx.id);
-    await refreshTransactions();
     if (!context.mounted) return;
+
+    // Optimistically remove from UI
+    final currentList = List<TransactionRecord>.from(transactionsNotifier.value);
+    transactionsNotifier.value = currentList.where((t) => t.id != tx.id).toList();
+
+    final t = AppLocalizations.of(context);
+    var undoPressed = false;
+
+    ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
-          _i18n(context, id: 'Transaksi dihapus', en: 'Transaction deleted'),
+        content: Text(t.t('transaction_deleted')),
+        duration: const Duration(seconds: 5),
+        action: SnackBarAction(
+          label: t.t('undo'),
+          onPressed: () {
+            undoPressed = true;
+            // Restore the transaction in UI
+            transactionsNotifier.value = currentList;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(t.t('transaction_restored'))),
+            );
+          },
         ),
       ),
-    );
+    ).closed.then((reason) async {
+      if (!undoPressed) {
+        await DatabaseService.instance.deleteTransaction(tx.id);
+        await refreshTransactions();
+      }
+    });
   }
 
   Future<void> _showFilterSheet(BuildContext context) async {

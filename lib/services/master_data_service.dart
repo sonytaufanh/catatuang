@@ -246,6 +246,56 @@ class MasterDataService extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<bool> renameExpenseCategory(String oldValue, String newValue) async {
+    final normalized = normalizeMasterKey(newValue);
+    if (normalized.isEmpty) return false;
+    final current = await expenseCategories();
+    final idx = current.indexOf(oldValue);
+    if (idx < 0) return false;
+    if (current.contains(normalized) && normalized != oldValue) return false;
+    current[idx] = normalized;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_expenseCategoriesKey, current);
+    notifyListeners();
+    return true;
+  }
+
+  Future<bool> renameIncomeCategory(String oldValue, String newValue) async {
+    final normalized = normalizeMasterKey(newValue);
+    if (normalized.isEmpty) return false;
+    final current = await incomeCategories();
+    final idx = current.indexOf(oldValue);
+    if (idx < 0) return false;
+    if (current.contains(normalized) && normalized != oldValue) return false;
+    current[idx] = normalized;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_incomeCategoriesKey, current);
+    notifyListeners();
+    return true;
+  }
+
+  Future<bool> renameWallet(String oldValue, String newValue) async {
+    final normalized = normalizeMasterKey(newValue);
+    if (normalized.isEmpty) return false;
+    final current = await wallets();
+    final idx = current.indexOf(oldValue);
+    if (idx < 0) return false;
+    if (current.contains(normalized) && normalized != oldValue) return false;
+    current[idx] = normalized;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_walletsKey, current);
+    // Migrate opening balance
+    final oldBalance =
+        prefs.getInt('$_openingBalancePrefix$oldValue') ?? 0;
+    await prefs.remove('$_openingBalancePrefix$oldValue');
+    if (oldBalance > 0) {
+      await prefs.setInt('$_openingBalancePrefix$normalized', oldBalance);
+    }
+    _openingBalances = await walletOpeningBalances();
+    notifyListeners();
+    return true;
+  }
+
   Future<void> ensureMasterContains({
     required String wallet,
     required String category,

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/recurring_bill_store.dart';
+import '../data/database_service.dart';
 import '../data/transaction_store.dart';
 import '../services/app_localizations.dart';
 import '../services/app_animations.dart';
@@ -20,6 +21,7 @@ import '../services/notification_service.dart';
 import '../services/recurring_transaction_service.dart';
 import '../services/thousand_separator_formatter.dart';
 import '../services/user_profile_service.dart';
+import '../widgets/category_budget_card.dart';
 import 'home/home_formatters.dart';
 import 'home/transaction_search_delegate.dart';
 import 'profile/profile_tiles.dart';
@@ -1687,6 +1689,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   );
                 },
               ),
+              ListTile(
+                leading: const Icon(
+                  Icons.repeat_rounded,
+                  color: AppUiTokens.warning,
+                ),
+                title: Text(t.t('manage_recurring_transactions')),
+                subtitle: Text(t.t('manage_recurring_transactions_desc')),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _showRecurringTransactionManager();
+                },
+              ),
               const SizedBox(height: 8),
             ],
           ),
@@ -1753,6 +1767,118 @@ class _ProfileScreenState extends State<ProfileScreen> {
               } else {
                 await MasterDataService.instance.removeExpenseCategory(value);
               }
+              setModalState(() {});
+            }
+
+            Future<void> renameItem(String oldValue) async {
+              final renameController = TextEditingController(text: oldValue);
+              final save = await showDialog<bool>(
+                context: context,
+                builder: (dialogContext) {
+                  return Dialog(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            isWallet
+                                ? t.t('rename_wallet')
+                                : t.t('rename_category'),
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: renameController,
+                            autofocus: true,
+                            decoration: InputDecoration(
+                              hintText: isWallet
+                                  ? t.t('wallet_name_hint')
+                                  : t.t('category_name_hint'),
+                              border: const OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: () =>
+                                      Navigator.pop(dialogContext, false),
+                                  child: Text(t.t('cancel')),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: FilledButton(
+                                  onPressed: () =>
+                                      Navigator.pop(dialogContext, true),
+                                  child: Text(t.t('save')),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              );
+              if (save != true) return;
+              final newName = renameController.text.trim();
+              if (newName.isEmpty || newName.length < 2 || newName.length > 30) {
+                return;
+              }
+              bool success;
+              if (isWallet) {
+                success = await MasterDataService.instance
+                    .renameWallet(oldValue, newName);
+              } else if (isIncomeCategory) {
+                success = await MasterDataService.instance
+                    .renameIncomeCategory(oldValue, newName);
+              } else {
+                success = await MasterDataService.instance
+                    .renameExpenseCategory(oldValue, newName);
+              }
+              if (!success) return;
+              // Update all transactions with old category/wallet name
+              final txs = transactionsNotifier.value;
+              final normalized =
+                  MasterDataService.normalizeMasterKey(newName);
+              for (final tx in txs) {
+                bool needsUpdate = false;
+                String updatedWallet = tx.wallet;
+                String updatedCategory = tx.category;
+                if (isWallet && tx.wallet == oldValue) {
+                  updatedWallet = normalized;
+                  needsUpdate = true;
+                } else if (!isWallet && tx.category == oldValue) {
+                  updatedCategory = normalized;
+                  needsUpdate = true;
+                }
+                if (needsUpdate) {
+                  await DatabaseService.instance.updateTransaction(
+                    id: tx.id,
+                    isExpense: tx.isExpense,
+                    amount: tx.amount,
+                    wallet: updatedWallet,
+                    category: updatedCategory,
+                    transactionDate: tx.transactionDate,
+                    isCleared: tx.isCleared,
+                    note: tx.note,
+                    receiptPath: tx.receiptPath,
+                  );
+                }
+              }
+              await refreshTransactions();
               setModalState(() {});
             }
 
@@ -1854,7 +1980,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         return ConstrainedBox(
                           constraints: const BoxConstraints(maxHeight: 320),
                           child: ListView.separated(
-                            physics: const NeverScrollableScrollPhysics(),
                             shrinkWrap: true,
                             itemCount: items.length,
                             separatorBuilder: (context, index) =>
@@ -1908,6 +2033,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                           color: AppUiTokens.brandBlue,
                                         ),
                                       ),
+                                    IconButton(
+                                      tooltip: isWallet
+                                          ? t.t('rename_wallet')
+                                          : t.t('rename_category'),
+                                      onPressed: isDefault
+                                          ? null
+                                          : () => renameItem(item),
+                                      icon: Icon(
+                                        Icons.edit_outlined,
+                                        color: isDefault
+                                            ? AppUiTokens.textHint
+                                            : AppUiTokens.brandBlueDark,
+                                      ),
+                                    ),
                                     IconButton(
                                       onPressed: isDefault
                                           ? null
@@ -1999,6 +2138,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       '${t.t('budget_limit')} ${settings.formatCurrency(budgetLimit)}',
                   compact: true,
                   onTap: _showBudgetSheet,
+                ),
+                const ProfileDivider(),
+                ProfileActionTile(
+                  icon: Icons.pie_chart_rounded,
+                  color: AppUiTokens.brandBlueSoft,
+                  title: t.t('budget_per_category'),
+                  subtitle: t.t('category_budget'),
+                  compact: true,
+                  onTap: () => showCategoryBudgetSheet(context),
                 ),
                 const ProfileDivider(),
                 ProfileSwitchTile(

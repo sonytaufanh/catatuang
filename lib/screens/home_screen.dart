@@ -8,12 +8,15 @@ import '../services/app_localizations.dart';
 import '../services/app_animations.dart';
 import '../services/app_settings.dart';
 import '../services/app_ui_tokens.dart';
+import '../services/ai_insight_engine.dart';
 import '../services/analytics_service.dart';
 import '../services/due_date_service.dart';
 import '../services/master_data_service.dart';
+import '../services/savings_goal_service.dart';
 import '../services/thousand_separator_formatter.dart';
 import '../services/user_profile_service.dart';
 import 'add_transaction_screen.dart';
+import 'ai_chat_screen.dart';
 import 'home/home_formatters.dart';
 import 'home/home_models.dart';
 import 'home/transaction_search_delegate.dart';
@@ -38,8 +41,10 @@ class HomeScreen extends StatelessWidget {
         recurringBillsNotifier,
         UserProfileService.instance,
         MasterDataService.instance,
+        SavingsGoalService.instance.notifier,
       ]),
       builder: (context, _) {
+        SavingsGoalService.instance.ensureLoaded();
         final profile = UserProfileService.instance;
         final transactions = transactionsNotifier.value;
         final bills = recurringBillsNotifier.value;
@@ -138,6 +143,34 @@ class HomeScreen extends StatelessWidget {
                         ),
                         Row(
                           children: [
+                            PressableScale(
+                              borderRadius: BorderRadius.circular(99),
+                              pressedScale: 0.9,
+                              onTap: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => const AiChatScreen(),
+                                  ),
+                                );
+                              },
+                              child: Padding(
+                                padding: const EdgeInsets.all(4),
+                                child: Container(
+                                  padding: const EdgeInsets.all(4),
+                                  decoration: BoxDecoration(
+                                    gradient: AppUiTokens.brandGradient,
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Icon(
+                                    Icons.auto_awesome_rounded,
+                                    color: AppUiTokens.white,
+                                    size: 16,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
                             PressableScale(
                               borderRadius: BorderRadius.circular(99),
                               pressedScale: 0.9,
@@ -283,6 +316,21 @@ class HomeScreen extends StatelessWidget {
                   ),
                   SizedBox(
                     height: compact ? AppUiTokens.space3 : AppUiTokens.space5,
+                  ),
+                  _buildSavingsGoalCard(
+                    context: context,
+                    settings: settings,
+                    t: t,
+                    totalBalance: summary.totalBalance,
+                    compact: compact,
+                  ),
+                  _buildAiInsightsCard(
+                    context: context,
+                    transactions: transactions,
+                    totalBalance: summary.totalBalance,
+                    settings: settings,
+                    t: t,
+                    compact: compact,
                   ),
                   AnimatedTabReveal(
                     tabIndex: 0,
@@ -536,6 +584,212 @@ class HomeScreen extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildSavingsGoalCard({
+    required BuildContext context,
+    required AppSettings settings,
+    required AppLocalizations t,
+    required int totalBalance,
+    required bool compact,
+  }) {
+    final goal = SavingsGoalService.instance.notifier.value;
+    if (!goal.enabled) return const SizedBox.shrink();
+    final progress = (totalBalance / goal.targetAmount).clamp(0.0, 1.0);
+    final percent = (progress * 100).round();
+    return AnimatedTabReveal(
+      tabIndex: 0,
+      delay: const Duration(milliseconds: 95),
+      child: Padding(
+        padding: EdgeInsets.only(bottom: compact ? AppUiTokens.space3 : AppUiTokens.space5),
+        child: Container(
+          width: double.infinity,
+          padding: EdgeInsets.all(compact ? 10 : 12),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                AppUiTokens.successDark.withValues(alpha: 0.08),
+                AppUiTokens.brandBlueSoft.withValues(alpha: 0.10),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppUiTokens.borderSoft),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.savings_rounded, size: 14, color: AppUiTokens.successDark),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      goal.label.isNotEmpty ? goal.label : t.t('savings_goal'),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    '$percent%',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      color: percent >= 100 ? AppUiTokens.successDark : AppUiTokens.brandBlueDark,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 6,
+                  backgroundColor: AppUiTokens.borderSoft,
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    percent >= 100 ? AppUiTokens.successDark : AppUiTokens.brandBlue,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '${settings.formatCurrency(totalBalance)} / ${settings.formatCurrency(goal.targetAmount)}',
+                style: const TextStyle(
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.w600,
+                  color: AppUiTokens.textMuted,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAiInsightsCard({
+    required BuildContext context,
+    required List<TransactionRecord> transactions,
+    required int totalBalance,
+    required AppSettings settings,
+    required AppLocalizations t,
+    required bool compact,
+  }) {
+    if (transactions.length < 5) return const SizedBox.shrink();
+
+    final insights = AiInsightEngine.instance.generateInsights(
+      transactions: transactions,
+      totalBalance: totalBalance,
+      cycleStartDay: settings.billingCycleStart,
+      languageCode: settings.languageCode,
+    );
+
+    if (insights.isEmpty) return const SizedBox.shrink();
+
+    final insight = insights.first;
+    final insightColor = switch (insight.type) {
+      InsightType.positive => AppUiTokens.successDark,
+      InsightType.warning => AppUiTokens.warningDark,
+      InsightType.info => AppUiTokens.brandBlue,
+      InsightType.tip => AppUiTokens.infoSoft,
+    };
+    final bgColor = switch (insight.type) {
+      InsightType.positive => AppUiTokens.successSoft,
+      InsightType.warning => AppUiTokens.warningSoft,
+      InsightType.info => AppUiTokens.surfaceBlueSoft,
+      InsightType.tip => AppUiTokens.surfaceTintBlue,
+    };
+    final borderColor = switch (insight.type) {
+      InsightType.positive => AppUiTokens.successSoftBorder,
+      InsightType.warning => AppUiTokens.warningSoftBorder,
+      InsightType.info => AppUiTokens.brandBlueBorder,
+      InsightType.tip => AppUiTokens.brandBlueBorder,
+    };
+
+    return AnimatedTabReveal(
+      tabIndex: 0,
+      delay: const Duration(milliseconds: 100),
+      child: Padding(
+        padding: EdgeInsets.only(bottom: compact ? 6.0 : 8.0),
+        child: GestureDetector(
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                builder: (_) => const AiChatScreen(),
+              ),
+            );
+          },
+          child: Container(
+            width: double.infinity,
+            padding: EdgeInsets.all(compact ? 10 : 12),
+            decoration: BoxDecoration(
+              color: bgColor,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: borderColor),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: insightColor.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    Icons.auto_awesome_rounded,
+                    size: 14,
+                    color: insightColor,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        insight.title,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          color: insightColor,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        insight.message,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w500,
+                          color: AppUiTokens.textBody,
+                          height: 1.4,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  size: 16,
+                  color: insightColor,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -851,36 +1105,63 @@ class HomeScreen extends StatelessWidget {
                                   : entry.value / summary.expenseThisCycle;
                               return Padding(
                                 padding: const EdgeInsets.only(bottom: 6),
-                                child: _buildCompactCategory(
-                                  homeCategoryLabel(t, entry.key),
-                                  settings.formatCurrency(entry.value),
-                                  share.clamp(0.0, 1.0),
-                                  color,
+                                child: GestureDetector(
+                                  onTap: () => _showCategoryBreakdown(
+                                    context: context,
+                                    categoryKey: entry.key,
+                                    transactions: transactions,
+                                    settings: settings,
+                                    t: t,
+                                  ),
+                                  child: _buildCompactCategory(
+                                    homeCategoryLabel(t, entry.key),
+                                    settings.formatCurrency(entry.value),
+                                    share.clamp(0.0, 1.0),
+                                    color,
+                                  ),
                                 ),
                               );
                             }),
                           const Spacer(),
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 7,
+                          GestureDetector(
+                            onTap: () => _showAllCategoriesBreakdown(
+                              context: context,
+                              summary: summary,
+                              transactions: transactions,
+                              settings: settings,
+                              t: t,
                             ),
-                            decoration: BoxDecoration(
-                              color: AppUiTokens.warningSoft,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: AppUiTokens.warningSoftBorder,
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 7,
                               ),
-                            ),
-                            child: Text(
-                              topCategories.isEmpty
-                                  ? t.t('largest_category_none')
-                                  : '${homeCategoryLabel(t, topCategories.first.key)} ${((topCategories.first.value / (summary.expenseThisCycle == 0 ? 1 : summary.expenseThisCycle)) * 100).round()}%',
-                              style: const TextStyle(
-                                fontSize: 9.5,
-                                color: AppUiTokens.warningSoftText,
-                                fontWeight: FontWeight.w700,
+                              decoration: BoxDecoration(
+                                color: AppUiTokens.surfaceTintBlue,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: AppUiTokens.brandBlueBorder,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(
+                                    Icons.pie_chart_outline_rounded,
+                                    size: 11,
+                                    color: AppUiTokens.labelBlue,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    t.t('see_all_breakdown'),
+                                    style: const TextStyle(
+                                      fontSize: 9.5,
+                                      color: AppUiTokens.labelBlue,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ),
@@ -1121,6 +1402,363 @@ class HomeScreen extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+
+  void _showCategoryBreakdown({
+    required BuildContext context,
+    required String categoryKey,
+    required List<TransactionRecord> transactions,
+    required AppSettings settings,
+    required AppLocalizations t,
+  }) {
+    final categoryTxs = transactions
+        .where((tx) => tx.isExpense && tx.category == categoryKey)
+        .toList()
+      ..sort((a, b) => b.transactionDate.compareTo(a.transactionDate));
+    final label = homeCategoryLabel(t, categoryKey);
+    final color = homeCategoryColor(categoryKey);
+    final total = categoryTxs.fold<int>(0, (sum, tx) => sum + tx.amount);
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.7,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 42,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: AppUiTokens.borderSoft,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(
+                          color: color,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          label,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                      Text(
+                        settings.formatCurrency(total),
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: color,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${categoryTxs.length} ${t.t('transactions_count')}',
+                    style: const TextStyle(
+                      fontSize: 10.5,
+                      color: AppUiTokens.textMuted,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  const Divider(height: 1),
+                  const SizedBox(height: 8),
+                  if (categoryTxs.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 20),
+                      child: Center(
+                        child: Text(
+                          t.t('no_data'),
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AppUiTokens.textMuted,
+                          ),
+                        ),
+                      ),
+                    )
+                  else
+                    Flexible(
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        itemCount: categoryTxs.length,
+                        separatorBuilder: (_, __) =>
+                            const Divider(height: 1, indent: 44),
+                        itemBuilder: (context, index) {
+                          final tx = categoryTxs[index];
+                          final dateStr =
+                              '${tx.transactionDate.day}/${tx.transactionDate.month}/${tx.transactionDate.year}';
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 32,
+                                  height: 32,
+                                  decoration: BoxDecoration(
+                                    color: color.withValues(alpha: 0.12),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Icon(
+                                    Icons.call_made_rounded,
+                                    size: 14,
+                                    color: color,
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        tx.note.isNotEmpty
+                                            ? tx.note
+                                            : label,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontSize: 11.5,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        '$dateStr • ${tx.wallet}',
+                                        style: const TextStyle(
+                                          fontSize: 9.5,
+                                          color: AppUiTokens.textMuted,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Text(
+                                  '-${settings.formatCurrency(tx.amount)}',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w800,
+                                    color: color,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showAllCategoriesBreakdown({
+    required BuildContext context,
+    required HomeDashboardSummary summary,
+    required List<TransactionRecord> transactions,
+    required AppSettings settings,
+    required AppLocalizations t,
+  }) {
+    final allCategories = summary.cycleExpensesByCategory.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.75,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 42,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: AppUiTokens.borderSoft,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    t.t('expense_by_category'),
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${t.t('total')}: ${settings.formatCurrency(summary.expenseThisCycle)}',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppUiTokens.textMuted,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  const Divider(height: 1),
+                  const SizedBox(height: 8),
+                  if (allCategories.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 20),
+                      child: Center(
+                        child: Text(
+                          t.t('no_data'),
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AppUiTokens.textMuted,
+                          ),
+                        ),
+                      ),
+                    )
+                  else
+                    Flexible(
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: allCategories.length,
+                        itemBuilder: (ctx, index) {
+                          final entry = allCategories[index];
+                          final color = homeCategoryColor(entry.key);
+                          final share = summary.expenseThisCycle <= 0
+                              ? 0.0
+                              : entry.value / summary.expenseThisCycle;
+                          final txCount = transactions
+                              .where((tx) =>
+                                  tx.isExpense && tx.category == entry.key)
+                              .length;
+                          return InkWell(
+                            borderRadius: BorderRadius.circular(10),
+                            onTap: () {
+                              Navigator.pop(sheetContext);
+                              _showCategoryBreakdown(
+                                context: context,
+                                categoryKey: entry.key,
+                                transactions: transactions,
+                                settings: settings,
+                                t: t,
+                              );
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              child: Column(
+                                children: [
+                                  Row(
+                                    children: [
+                                      Container(
+                                        width: 10,
+                                        height: 10,
+                                        decoration: BoxDecoration(
+                                          color: color,
+                                          shape: BoxShape.circle,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          homeCategoryLabel(t, entry.key),
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                      Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.end,
+                                        children: [
+                                          Text(
+                                            settings.formatCurrency(entry.value),
+                                            style: TextStyle(
+                                              fontSize: 11.5,
+                                              fontWeight: FontWeight.w800,
+                                              color: color,
+                                            ),
+                                          ),
+                                          Text(
+                                            '$txCount trx • ${(share * 100).toInt()}%',
+                                            style: const TextStyle(
+                                              fontSize: 9,
+                                              color: AppUiTokens.textMuted,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(width: 6),
+                                      const Icon(
+                                        Icons.chevron_right_rounded,
+                                        size: 16,
+                                        color: AppUiTokens.textMuted,
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: LinearProgressIndicator(
+                                      value: share.clamp(0.0, 1.0),
+                                      minHeight: 4,
+                                      backgroundColor: AppUiTokens.borderSoft,
+                                      color: color,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
