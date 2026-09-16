@@ -10,6 +10,11 @@ class BiometricLockService {
 
   final LocalAuthentication _auth = LocalAuthentication();
 
+  Future<bool> isEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(keyBiometricLock) ?? false;
+  }
+
   Future<bool> authenticateIfEnabled() async {
     return authenticateForSensitiveAction(
       reason: 'Verifikasi biometrik untuk membuka aplikasi',

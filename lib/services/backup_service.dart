@@ -10,8 +10,11 @@ import '../data/database_service.dart';
 import '../data/recurring_bill_store.dart';
 import '../data/transaction_store.dart';
 import 'backup_crypto_service.dart';
+import 'category_budget_service.dart';
 import 'master_data_service.dart';
 import 'notification_service.dart';
+import 'recurring_transaction_service.dart';
+import 'savings_goal_service.dart';
 
 class BackupService {
   BackupService._();
@@ -31,6 +34,11 @@ class BackupService {
   Future<String> backupNow() async {
     final payload = await DatabaseService.instance.exportBackupPayload();
     payload['masterData'] = await MasterDataService.instance.exportPayload();
+    payload['recurringTemplates'] = await RecurringTransactionService.instance
+        .exportPayload();
+    payload['categoryBudgets'] = await CategoryBudgetService.instance
+        .exportPayload();
+    payload['savingsGoal'] = await SavingsGoalService.instance.exportPayload();
     final protectedPayload = await _protectPayload(payload);
     final file = await _backupFile();
     await file.parent.create(recursive: true);
@@ -50,6 +58,24 @@ class BackupService {
     final masterData = payload['masterData'];
     if (masterData is Map<String, dynamic>) {
       await MasterDataService.instance.restorePayload(masterData);
+    }
+    final recurringTemplates = payload['recurringTemplates'];
+    if (recurringTemplates is List) {
+      await RecurringTransactionService.instance.restorePayload(
+        recurringTemplates,
+      );
+    }
+    final categoryBudgets = payload['categoryBudgets'];
+    if (categoryBudgets is Map) {
+      await CategoryBudgetService.instance.restorePayload(
+        Map<String, dynamic>.from(categoryBudgets),
+      );
+    }
+    final savingsGoal = payload['savingsGoal'];
+    if (savingsGoal is Map) {
+      await SavingsGoalService.instance.restorePayload(
+        Map<String, dynamic>.from(savingsGoal),
+      );
     }
     await refreshTransactions();
     await refreshRecurringBills();

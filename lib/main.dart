@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:ui';
 import 'data/database_service.dart';
+import 'data/debt_store.dart';
 import 'data/recurring_bill_store.dart';
 import 'data/transaction_store.dart';
 import 'screens/app_lock_gate.dart';
@@ -84,6 +85,12 @@ Future<void> _runStartup(AppSettings settings, StartupStatus status) async {
     () => DatabaseService.instance.init(),
   );
   await _safeStartupStep(
+    'transfer_group_backfill',
+    'Merapikan data transfer',
+    status,
+    () => DatabaseService.instance.backfillTransferGroupsIfNeeded(),
+  );
+  await _safeStartupStep(
     'recurring_bill_store_init',
     'Menyiapkan tagihan rutin',
     status,
@@ -94,6 +101,12 @@ Future<void> _runStartup(AppSettings settings, StartupStatus status) async {
     'Memuat transaksi',
     status,
     initTransactionStore,
+  );
+  await _safeStartupStep(
+    'debt_store_init',
+    'Memuat utang/piutang',
+    status,
+    initDebtStore,
   );
   await _safeStartupStep(
     'auth_init',
@@ -188,7 +201,7 @@ class CatatUangApp extends StatelessWidget {
         builder: (context, _) {
           return MaterialApp(
             debugShowCheckedModeBanner: false,
-            title: 'CatatUang Warna',
+            title: 'CatatUang',
             locale: settings.locale,
             supportedLocales: AppLocalizations.supportedLocales,
             localizationsDelegates: AppLocalizations.localizationsDelegates,
@@ -294,7 +307,7 @@ class _StartupSplashGateState extends State<_StartupSplashGate> {
               ),
               const SizedBox(height: 16),
               Text(
-                'CatatUang by Sony',
+                'CatatUang',
                 style: TextStyle(
                   fontSize: 20,
                   fontWeight: FontWeight.w800,

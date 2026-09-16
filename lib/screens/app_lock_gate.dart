@@ -25,6 +25,7 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
   bool _unlocked = false;
   bool _signedIn = true;
   bool _hasPasscode = false;
+  bool _biometricEnabled = false;
   bool _isSignUp = false;
   String _errorMessage = '';
   DateTime? _pausedAt;
@@ -141,6 +142,7 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
   Future<void> _initGate() async {
     try {
       _hasPasscode = await AppPasscodeService.instance.hasPasscode();
+      _biometricEnabled = await BiometricLockService.instance.isEnabled();
       _passcodeLockSeconds = await AppPasscodeService.instance
           .getRemainingLockSeconds();
       if (_passcodeLockSeconds > 0) {
@@ -164,7 +166,13 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
         );
       }
     }
-    final signedIn = await AuthService.instance.isSignedIn();
+    var signedIn = false;
+    try {
+      signedIn = await AuthService.instance.isSignedIn();
+    } catch (e) {
+      await ErrorLogService.instance.log(source: 'auth_state', error: e);
+      signedIn = false;
+    }
     if (!mounted) return;
     if (!signedIn) {
       setState(() {
@@ -270,9 +278,11 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
       _pausedAt = DateTime.now();
       return;
     }
-    if (state == AppLifecycleState.resumed && _unlocked) {
+    if (state == AppLifecycleState.resumed) {
       final pausedAt = _pausedAt;
-      if (pausedAt != null &&
+      _pausedAt = null;
+      if (_unlocked &&
+          pausedAt != null &&
           DateTime.now().difference(pausedAt).inSeconds >= 20) {
         if (!mounted) return;
         setState(() => _unlocked = false);
@@ -286,15 +296,39 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
       _loading = true;
       _errorMessage = '';
     });
-    final ok = await BiometricLockService.instance.authenticateIfEnabled();
+    final biometricEnabled = await BiometricLockService.instance.isEnabled();
     if (!mounted) return;
+    if (biometricEnabled) {
+      final ok = await BiometricLockService.instance.authenticateIfEnabled();
+      if (!mounted) return;
+      setState(() {
+        _biometricEnabled = true;
+        _unlocked = ok;
+        _loading = false;
+        if (ok) {
+          _pausedAt = null;
+        } else {
+          _errorMessage = 'Verifikasi gagal atau timeout.';
+        }
+      });
+      return;
+    }
+    if (_hasPasscode) {
+      // Passcode-only protection: keep the lock screen so the user must enter
+      // the PIN through the "Use Security PIN" action.
+      setState(() {
+        _biometricEnabled = false;
+        _unlocked = false;
+        _loading = false;
+      });
+      return;
+    }
     setState(() {
-      _unlocked = ok;
+      _biometricEnabled = false;
+      _unlocked = true;
       _loading = false;
-      if (!ok) {
-        _errorMessage = 'Verifikasi gagal atau timeout.';
-      }
     });
+    _pausedAt = null;
   }
 
   Future<void> _unlockWithPasscode() async {
@@ -344,6 +378,8 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
     if (!mounted) return;
     if (ok) {
       await AppPasscodeService.instance.clearFailedAttempts();
+      if (!mounted) return;
+      _pausedAt = null;
       setState(() {
         _unlocked = true;
         _errorMessage = '';
@@ -357,6 +393,7 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
       0,
       AppPasscodeService.maxAttempts,
     );
+    if (!mounted) return;
     setState(() {
       _unlocked = false;
       if (lockSeconds > 0) {
@@ -819,8 +856,10 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
                         const SizedBox(height: 4),
                         Center(
                           child: TextButton(
-                            onPressed: () =>
-                                setState(() => _isSignUp = !_isSignUp),
+                            onPressed: () => setState(() {
+                              _isSignUp = !_isSignUp;
+                              _errorMessage = '';
+                            }),
                             child: Text(
                               _isSignUp
                                   ? 'Sudah punya profil? Buka'
@@ -900,21 +939,34 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text(
-                  'Verifikasi biometrik untuk lanjut',
-                  style: TextStyle(fontSize: 12, color: AppUiTokens.textMuted),
-                ),
-                const SizedBox(height: 14),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: _unlock,
-                    icon: const Icon(Icons.fingerprint_rounded),
-                    label: Text(
-                      isEn ? 'Unlock with Biometrics' : 'Buka dengan Biometrik',
-                    ),
+                Text(
+                  _biometricEnabled
+                      ? (isEn
+                            ? 'Verify biometrics to continue'
+                            : 'Verifikasi biometrik untuk lanjut')
+                      : (isEn
+                            ? 'Enter your Security PIN to continue'
+                            : 'Masukkan PIN Keamanan untuk lanjut'),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppUiTokens.textMuted,
                   ),
                 ),
+                const SizedBox(height: 14),
+                if (_biometricEnabled)
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _unlock,
+                      icon: const Icon(Icons.fingerprint_rounded),
+                      label: Text(
+                        isEn
+                            ? 'Unlock with Biometrics'
+                            : 'Buka dengan Biometrik',
+                      ),
+                    ),
+                  ),
                 if (_hasPasscode) ...[
                   const SizedBox(height: 8),
                   SizedBox(

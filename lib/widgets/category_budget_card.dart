@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../data/models/transaction_record.dart';
 import '../data/transaction_store.dart';
 import '../services/app_localizations.dart';
 import '../services/app_settings.dart';
@@ -309,7 +308,7 @@ class _CategoryBudgetSheetContentState
             shrinkWrap: true,
             physics: const BouncingScrollPhysics(),
             itemCount: widget.categories.length,
-            separatorBuilder: (_, __) => const Divider(
+            separatorBuilder: (_, _) => const Divider(
               height: 1,
               color: AppUiTokens.borderSoft,
             ),

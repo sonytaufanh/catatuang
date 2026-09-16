@@ -48,6 +48,28 @@ class CategoryBudgetService extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<Map<String, dynamic>> exportPayload() async {
+    final budgets = await getAllBudgets();
+    return <String, dynamic>{...budgets};
+  }
+
+  Future<void> restorePayload(Map<String, dynamic> raw) async {
+    final prefs = await SharedPreferences.getInstance();
+    final index = prefs.getStringList(_indexKey) ?? <String>[];
+    for (final category in index) {
+      await prefs.remove('$_prefix$category');
+    }
+    await prefs.remove(_indexKey);
+    for (final entry in raw.entries) {
+      final amount = entry.value is num ? (entry.value as num).toInt() : 0;
+      final category = entry.key.toString().trim();
+      if (category.isEmpty || amount <= 0) continue;
+      await prefs.setInt('$_prefix$category', amount);
+      await _addToIndex(category);
+    }
+    notifyListeners();
+  }
+
   /// Calculate how much was spent in a category during a period.
   int getSpentForCategory(
     String category,

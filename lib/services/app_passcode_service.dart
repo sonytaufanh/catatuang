@@ -1,3 +1,7 @@
+import 'dart:convert';
+import 'dart:math';
+
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -13,6 +17,7 @@ class AppPasscodeService {
   static const int cooldownSeconds = 60;
 
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  final Random _random = Random.secure();
 
   Future<bool> isEnabled() async {
     final prefs = await SharedPreferences.getInstance();
@@ -32,7 +37,8 @@ class AppPasscodeService {
     if (!RegExp(r'^\d+$').hasMatch(normalized)) {
       throw ArgumentError('PIN hanya boleh angka.');
     }
-    await _secureStorage.write(key: _passcodeStorageKey, value: normalized);
+    final stored = await _hashPin(normalized);
+    await _secureStorage.write(key: _passcodeStorageKey, value: stored);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(keyPasscodeEnabled, true);
     await _clearProtectionState(prefs);
@@ -48,7 +54,41 @@ class AppPasscodeService {
   Future<bool> verifyPasscode(String pin) async {
     final stored = await _secureStorage.read(key: _passcodeStorageKey);
     if (stored == null || stored.isEmpty) return false;
-    return stored == pin.trim();
+    final normalized = pin.trim();
+
+    if (stored.contains(':')) {
+      final parts = stored.split(':');
+      if (parts.length != 2) return false;
+      final salt = base64Decode(parts[0]);
+      final expectedHash = parts[1];
+      final hash = await _hashPinWithSalt(normalized, salt);
+      return hash == expectedHash;
+    }
+
+    final legacyMatch = stored == normalized;
+    if (legacyMatch) {
+      await _secureStorage.write(
+        key: _passcodeStorageKey,
+        value: await _hashPin(normalized),
+      );
+    }
+    return legacyMatch;
+  }
+
+  Future<String> _hashPin(String pin) async {
+    final salt = _generateSalt();
+    final hash = await _hashPinWithSalt(pin, salt);
+    return '${base64Encode(salt)}:$hash';
+  }
+
+  Future<String> _hashPinWithSalt(String pin, List<int> salt) async {
+    final payload = utf8.encode('$salt::$pin');
+    final digest = await Sha256().hash(payload);
+    return base64Encode(digest.bytes);
+  }
+
+  List<int> _generateSalt() {
+    return List<int>.generate(16, (_) => _random.nextInt(256), growable: false);
   }
 
   Future<int> getRemainingLockSeconds() async {

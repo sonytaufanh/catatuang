@@ -9,6 +9,7 @@ import '../services/app_animations.dart';
 import '../services/app_settings.dart';
 import '../services/app_ui_tokens.dart';
 import '../services/biometric_lock_service.dart';
+import '../services/error_log_service.dart';
 import '../services/master_data_service.dart';
 import 'add_transaction_screen.dart';
 import 'home/home_formatters.dart';
@@ -31,6 +32,7 @@ class _WalletScreenState extends State<WalletScreen> {
   int? maxAmountFilter;
   DateTime? customStartDate;
   DateTime? customEndDate;
+  int _historyLimit = 30;
 
   @override
   Widget build(BuildContext context) {
@@ -49,9 +51,22 @@ class _WalletScreenState extends State<WalletScreen> {
             final sorted = [...txs]
               ..sort((a, b) => b.transactionDate.compareTo(a.transactionDate));
             final filtered = _applyFilters(sorted);
+            final walletScoped = walletFilter == 'all'
+                ? sorted
+                : sorted
+                      .where(
+                        (tx) =>
+                            tx.wallet.toLowerCase() ==
+                            walletFilter.toLowerCase(),
+                      )
+                      .toList();
             final totalBalance =
-                MasterDataService.instance.openingBalanceTotal +
-                _totalBalance(sorted);
+                (walletFilter == 'all'
+                    ? MasterDataService.instance.openingBalanceTotal
+                    : MasterDataService.instance.openingBalanceForWalletSync(
+                        walletFilter,
+                      )) +
+                _totalBalance(walletScoped);
             final cashflow = _cashflowTotals(filtered);
             final incomeTotal = cashflow.income;
             final expenseTotal = cashflow.expense;
@@ -676,7 +691,8 @@ class _WalletScreenState extends State<WalletScreen> {
       );
     }
 
-    final limited = transactions;
+    final limited = transactions.take(_historyLimit).toList(growable: false);
+    final hasMore = transactions.length > limited.length;
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 4),
       decoration: BoxDecoration(
@@ -694,15 +710,11 @@ class _WalletScreenState extends State<WalletScreen> {
       child: Column(
         children: [
           for (var i = 0; i < limited.length; i++) ...[
-            AnimatedTabReveal(
-              tabIndex: 2,
-              delay: Duration(milliseconds: 260 + (i * 35)),
-              child: _buildActivityRow(
-                context: context,
-                t: t,
-                settings: settings,
-                tx: limited[i],
-              ),
+            _buildActivityRow(
+              context: context,
+              t: t,
+              settings: settings,
+              tx: limited[i],
             ),
             if (i < limited.length - 1)
               Divider(
@@ -712,6 +724,20 @@ class _WalletScreenState extends State<WalletScreen> {
                 endIndent: 12,
               ),
           ],
+          if (hasMore)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: TextButton(
+                onPressed: () => setState(() => _historyLimit += 30),
+                child: Text(
+                  _i18n(
+                    context,
+                    id: 'Tampilkan lebih banyak',
+                    en: 'Show more',
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -808,18 +834,20 @@ class _WalletScreenState extends State<WalletScreen> {
                     spacing: 6,
                     runSpacing: 6,
                     children: [
-                      _buildRowAction(
-                        context: context,
-                        label: _i18n(context, id: 'Edit', en: 'Edit'),
-                        icon: Icons.edit_outlined,
-                        onTap: () => _editTransaction(context, tx),
-                      ),
-                      _buildRowAction(
-                        context: context,
-                        label: _i18n(context, id: 'Duplikat', en: 'Duplicate'),
-                        icon: Icons.copy_all_rounded,
-                        onTap: () => _duplicateTransaction(context, tx),
-                      ),
+                      if (!_isGroupedTransaction(tx)) ...[
+                        _buildRowAction(
+                          context: context,
+                          label: _i18n(context, id: 'Edit', en: 'Edit'),
+                          icon: Icons.edit_outlined,
+                          onTap: () => _editTransaction(context, tx),
+                        ),
+                        _buildRowAction(
+                          context: context,
+                          label: _i18n(context, id: 'Duplikat', en: 'Duplicate'),
+                          icon: Icons.copy_all_rounded,
+                          onTap: () => _duplicateTransaction(context, tx),
+                        ),
+                      ],
                       _buildRowAction(
                         context: context,
                         label: _i18n(context, id: 'Hapus', en: 'Delete'),
@@ -893,10 +921,19 @@ class _WalletScreenState extends State<WalletScreen> {
     );
   }
 
+  bool _isGroupedTransaction(TransactionRecord tx) {
+    return DatabaseService.isTransferCategory(tx.category) ||
+        tx.splitGroupId.trim().isNotEmpty;
+  }
+
   Future<void> _editTransaction(
     BuildContext context,
     TransactionRecord tx,
   ) async {
+    if (_isGroupedTransaction(tx)) {
+      _showTransferNotice(context);
+      return;
+    }
     final result = await Navigator.push(
       context,
       MaterialPageRoute<Object?>(
@@ -911,10 +948,30 @@ class _WalletScreenState extends State<WalletScreen> {
     );
   }
 
+  void _showTransferNotice(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          _i18n(
+            context,
+            id:
+                'Transfer/transaksi terbagi tidak bisa diedit di sini. Hapus lalu buat ulang.',
+            en:
+                'Transfers/split transactions cannot be edited here. Delete and recreate.',
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _duplicateTransaction(
     BuildContext context,
     TransactionRecord tx,
   ) async {
+    if (_isGroupedTransaction(tx)) {
+      _showTransferNotice(context);
+      return;
+    }
     final result = await Navigator.push(
       context,
       MaterialPageRoute<Object?>(
@@ -945,9 +1002,16 @@ class _WalletScreenState extends State<WalletScreen> {
     if (!allowed) return;
     if (!context.mounted) return;
 
-    // Optimistically remove from UI
+    // Optimistically hide from UI, including the paired transfer leg.
     final currentList = List<TransactionRecord>.from(transactionsNotifier.value);
-    transactionsNotifier.value = currentList.where((t) => t.id != tx.id).toList();
+    final removedIds = <int>{
+      tx.id,
+      for (final candidate in currentList)
+        if (DatabaseService.isTransferCounterpart(tx, candidate) ||
+            DatabaseService.isSameSplitGroup(tx, candidate))
+          candidate.id,
+    };
+    suppressTransactions(removedIds);
 
     final t = AppLocalizations.of(context);
     var undoPressed = false;
@@ -959,10 +1023,11 @@ class _WalletScreenState extends State<WalletScreen> {
         duration: const Duration(seconds: 5),
         action: SnackBarAction(
           label: t.t('undo'),
-          onPressed: () {
+          onPressed: () async {
             undoPressed = true;
-            // Restore the transaction in UI
-            transactionsNotifier.value = currentList;
+            releaseSuppressedTransactions();
+            await refreshTransactions();
+            if (!context.mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text(t.t('transaction_restored'))),
             );
@@ -970,8 +1035,16 @@ class _WalletScreenState extends State<WalletScreen> {
         ),
       ),
     ).closed.then((reason) async {
-      if (!undoPressed) {
-        await DatabaseService.instance.deleteTransaction(tx.id);
+      if (undoPressed) return;
+      try {
+        await DatabaseService.instance.deleteTransactionDeep(tx);
+      } catch (e) {
+        await ErrorLogService.instance.log(
+          source: 'wallet_delete_transaction',
+          error: e,
+        );
+      } finally {
+        releaseSuppressedTransactions();
         await refreshTransactions();
       }
     });
@@ -1504,9 +1577,10 @@ class _WalletScreenState extends State<WalletScreen> {
         return DateUtils.dateOnly(tx.transactionDate) == today;
       }
       if (periodFilter == 'week') {
-        return tx.transactionDate.isAfter(
-          now.subtract(const Duration(days: 7)),
-        );
+        final weekStart = today.subtract(const Duration(days: 6));
+        final weekEnd = today.add(const Duration(days: 1));
+        return !tx.transactionDate.isBefore(weekStart) &&
+            tx.transactionDate.isBefore(weekEnd);
       }
       if (periodFilter == 'this_month') {
         return !tx.transactionDate.isBefore(thisMonthStart) &&
@@ -1596,6 +1670,7 @@ class _WalletScreenState extends State<WalletScreen> {
         return t.t('wallet_bank');
       case 'ewallet':
       case 'e-wallet':
+      case 'e_wallet':
         return t.t('wallet_ewallet');
       case 'card':
       case 'kartu':
@@ -1608,33 +1683,7 @@ class _WalletScreenState extends State<WalletScreen> {
   }
 
   String _categoryLabel(AppLocalizations t, String key) {
-    final normalized = key.trim().toLowerCase();
-    switch (normalized) {
-      case 'food':
-      case 'makanan':
-      case 'kuliner':
-        return t.t('category_food');
-      case 'transport':
-      case 'transportasi':
-        return t.t('category_transport');
-      case 'bills':
-      case 'tagihan':
-        return t.t('category_bills');
-      case 'shopping':
-      case 'belanja':
-        return t.t('category_shopping');
-      case 'health':
-      case 'kesehatan':
-        return t.t('category_health');
-      case 'education':
-      case 'pendidikan':
-        return t.t('category_education');
-      case 'entertainment':
-      case 'hiburan':
-        return t.t('category_entertainment');
-      default:
-        return key;
-    }
+    return homeCategoryLabel(t, key);
   }
 
   DateTimeRange _cycleRange(DateTime now, int cycleStartDay) {
@@ -1691,6 +1740,9 @@ class _WalletScreenState extends State<WalletScreen> {
     var income = 0;
     var expense = 0;
     for (final tx in txs) {
+      if (tx.category == 'transfer_out' || tx.category == 'transfer_in') {
+        continue;
+      }
       if (tx.isExpense) {
         expense += tx.amount;
       } else {

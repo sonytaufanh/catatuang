@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../services/analytics_service.dart';
 import '../services/app_animations.dart';
 import '../services/app_settings.dart';
 import '../services/app_ui_tokens.dart';
+import '../services/error_log_service.dart';
 import '../services/master_data_service.dart';
 import '../services/onboarding_service.dart';
 import '../services/savings_goal_service.dart';
@@ -215,8 +215,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                               constraints: BoxConstraints(
                                 maxWidth: _maxContentWidth,
                                 minHeight:
-                                    constraints.maxHeight -
-                                    (compact ? 132 : 152),
+                                    (constraints.maxHeight -
+                                            (compact ? 132 : 152)) <
+                                        0
+                                    ? 0
+                                    : constraints.maxHeight -
+                                          (compact ? 132 : 152),
                               ),
                               child: _buildStep(isEn),
                             ),
@@ -987,10 +991,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         ),
       ];
       if (goalAmount > 0) {
+        final goalLabel = _goalLabelController.text.trim();
         completionTasks.add(
           SavingsGoalService.instance.save(
             targetAmount: goalAmount,
-            label: _goalLabelController.text.trim(),
+            label: goalLabel.isEmpty
+                ? (widget.settings.languageCode == 'en'
+                      ? 'Savings goal'
+                      : 'Target tabungan')
+                : goalLabel,
           ),
         );
       }
@@ -1008,6 +1017,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       );
       if (!mounted) return;
       widget.onDone();
+    } catch (e) {
+      await ErrorLogService.instance.log(
+        source: 'onboarding_finish',
+        error: e,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Gagal menyimpan: $e')));
     } finally {
       if (mounted) {
         setState(() => _saving = false);

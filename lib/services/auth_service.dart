@@ -71,6 +71,11 @@ class AuthService {
       if (result.user == null) {
         throw Exception('Registrasi gagal.');
       }
+      if (result.session == null) {
+        throw Exception(
+          'Registrasi berhasil. Cek email untuk verifikasi lalu masuk.',
+        );
+      }
       await UserProfileService.instance.setIdentityFromAuthEmail(email);
       return;
     }

@@ -428,7 +428,7 @@ class _TransferScreenState extends State<TransferScreen> {
                     ),
                     SizedBox(width: compact ? 3 : 4),
                     Text(
-                      'Ubah',
+                      t.t('change_btn'),
                       style: TextStyle(
                         color: AppUiTokens.brandBlue,
                         fontSize: _actionTextSize,
@@ -492,7 +492,7 @@ class _TransferScreenState extends State<TransferScreen> {
       return;
     }
     if (amount > _maxAmount) {
-      _snack('Nominal terlalu besar (maksimal Rp 1.000.000.000).');
+      _snack(t.t('max_amount_error'));
       return;
     }
     if (_sourceWallet == _destWallet) {
@@ -504,7 +504,7 @@ class _TransferScreenState extends State<TransferScreen> {
         ? _date
         : DateTime(_date.year, _date.month, _date.day);
     if (txDate.isAfter(DateTime.now().add(const Duration(days: 1)))) {
-      _snack('Tanggal transaksi tidak valid.');
+      _snack(t.t('invalid_tx_date'));
       return;
     }
 
@@ -516,25 +516,11 @@ class _TransferScreenState extends State<TransferScreen> {
 
     setState(() => _saving = true);
     try {
-      // Create expense from source wallet (transfer_out)
-      await DatabaseService.instance.addTransaction(
-        isExpense: true,
+      await DatabaseService.instance.addTransfer(
         amount: amount,
-        wallet: _sourceWallet,
-        category: 'transfer_out',
+        sourceWallet: _sourceWallet,
+        destWallet: _destWallet,
         transactionDate: txDate,
-        isCleared: true,
-        note: transferNote,
-      );
-
-      // Create income to destination wallet (transfer_in)
-      await DatabaseService.instance.addTransaction(
-        isExpense: false,
-        amount: amount,
-        wallet: _destWallet,
-        category: 'transfer_in',
-        transactionDate: txDate,
-        isCleared: true,
         note: transferNote,
       );
 
@@ -547,7 +533,7 @@ class _TransferScreenState extends State<TransferScreen> {
         source: 'transfer_save',
         error: e,
       );
-      _snack('Gagal menyimpan: $e');
+      _snack('${t.t('failed_to_save')}: $e');
     } finally {
       if (mounted) {
         setState(() => _saving = false);

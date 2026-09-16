@@ -13,6 +13,7 @@ import '../services/master_data_service.dart';
 import '../services/notification_service.dart';
 import '../widgets/category_budget_card.dart';
 import 'home/home_formatters.dart';
+import 'net_worth_screen.dart';
 import 'home/transaction_search_delegate.dart';
 
 class StatsScreen extends StatefulWidget {
@@ -126,9 +127,11 @@ class _StatsScreenState extends State<StatsScreen> {
         final runwayMonths = burnRate <= 0
             ? 0.0
             : (totalBalance / burnRate) / 30.0;
-        final budgetRatio = !_hasBudgetConfigured || budgetLimit <= 0
+        final budgetSpent = _currentMonthExpense(txs, now);
+        final budgetRawRatio = !_hasBudgetConfigured || budgetLimit <= 0
             ? 0.0
-            : (summary.expense / budgetLimit).clamp(0.0, 1.0);
+            : budgetSpent / budgetLimit;
+        final budgetRatio = budgetRawRatio.clamp(0.0, 1.0);
         final txDeltaLabel = _deltaLabel(
           summary.totalTxCount,
           summary.previousTotalTxCount,
@@ -145,6 +148,18 @@ class _StatsScreenState extends State<StatsScreen> {
               ),
             ),
             actions: [
+              IconButton(
+                tooltip: t.t('net_worth'),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<Object?>(
+                      builder: (_) => const NetWorthScreen(),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.insights_rounded),
+              ),
               IconButton(
                 onPressed: () {
                   showSearch<void>(
@@ -408,7 +423,7 @@ class _StatsScreenState extends State<StatsScreen> {
                                                 return Expanded(
                                                   child: _buildTrendBar(
                                                     compact: compact,
-                                                    day: _dayLabel(index, t),
+                                                    day: _dayLabel(index, t, now),
                                                     expense: trend
                                                         .expense[index]
                                                         .toDouble(),
@@ -495,6 +510,7 @@ class _StatsScreenState extends State<StatsScreen> {
                                                               label:
                                                                   _categoryLabel(
                                                                     item.key,
+                                                                    t,
                                                                   ),
                                                               amount: settings
                                                                   .formatCurrency(
@@ -678,7 +694,7 @@ class _StatsScreenState extends State<StatsScreen> {
                                                 return Expanded(
                                                   child: _buildTrendBar(
                                                     compact: compact,
-                                                    day: _dayLabel(index, t),
+                                                    day: _dayLabel(index, t, now),
                                                     expense: trend
                                                         .expense[index]
                                                         .toDouble(),
@@ -766,6 +782,7 @@ class _StatsScreenState extends State<StatsScreen> {
                                                               label:
                                                                   _categoryLabel(
                                                                     item.key,
+                                                                    t,
                                                                   ),
                                                               amount: settings
                                                                   .formatCurrency(
@@ -794,7 +811,7 @@ class _StatsScreenState extends State<StatsScreen> {
                                                         id: 'Belum ada perubahan kategori',
                                                         en: 'No category drift yet',
                                                       )
-                                                    : '${_categoryLabel(drift.key)} +${settings.formatCurrency(drift.value)}',
+                                                    : '${_categoryLabel(drift.key, t)} +${settings.formatCurrency(drift.value)}',
                                                 style: TextStyle(
                                                   fontSize: compact ? 8.5 : 9.5,
                                                   color: AppUiTokens.textNavy,
@@ -835,7 +852,7 @@ class _StatsScreenState extends State<StatsScreen> {
                                                       ),
                                                     ),
                                                     Text(
-                                                      '${(budgetRatio * 100).toStringAsFixed(0)}%',
+                                                      '${(budgetRawRatio * 100).toStringAsFixed(0)}%',
                                                       style: TextStyle(
                                                         fontSize: compact
                                                             ? 9
@@ -983,6 +1000,7 @@ class _StatsScreenState extends State<StatsScreen> {
     );
 
     if (picked == null) return;
+    if (!mounted) return;
     setState(() {
       selectedRangeIndex = 3;
       customStartDate = DateUtils.dateOnly(picked.start);
@@ -1009,7 +1027,12 @@ class _StatsScreenState extends State<StatsScreen> {
           start: start,
           end: end,
           previousStart: prevStart,
-          previousEnd: start,
+          previousEnd: _sameElapsedPreviousEnd(
+            start: start,
+            end: end,
+            previousStart: prevStart,
+            now: now,
+          ),
         );
       case 1:
         final start = DateTime(now.year, now.month, 1);
@@ -1019,7 +1042,12 @@ class _StatsScreenState extends State<StatsScreen> {
           start: start,
           end: end,
           previousStart: previousStart,
-          previousEnd: start,
+          previousEnd: _sameElapsedPreviousEnd(
+            start: start,
+            end: end,
+            previousStart: previousStart,
+            now: now,
+          ),
         );
       case 2:
         final start = DateTime(now.year, 1, 1);
@@ -1029,7 +1057,12 @@ class _StatsScreenState extends State<StatsScreen> {
           start: start,
           end: end,
           previousStart: previousStart,
-          previousEnd: start,
+          previousEnd: _sameElapsedPreviousEnd(
+            start: start,
+            end: end,
+            previousStart: previousStart,
+            now: now,
+          ),
         );
       default:
         final customStart =
@@ -1050,6 +1083,21 @@ class _StatsScreenState extends State<StatsScreen> {
     }
   }
 
+  /// Aligns the previous comparison window to the elapsed length of the
+  /// current period so a partial month is never compared to a full one.
+  DateTime _sameElapsedPreviousEnd({
+    required DateTime start,
+    required DateTime end,
+    required DateTime previousStart,
+    required DateTime now,
+  }) {
+    final reference = now.isBefore(end) ? now : end;
+    var elapsed = reference.difference(start);
+    if (elapsed.isNegative) elapsed = Duration.zero;
+    final candidate = previousStart.add(elapsed);
+    return candidate.isAfter(start) ? start : candidate;
+  }
+
   _Summary _summarize(List<TransactionRecord> txs, _Period period) {
     var income = 0;
     var expense = 0;
@@ -1065,8 +1113,12 @@ class _StatsScreenState extends State<StatsScreen> {
 
     for (final tx in txs) {
       final date = tx.transactionDate;
+      final isTransfer =
+          tx.category == 'transfer_out' || tx.category == 'transfer_in';
       if (!date.isBefore(period.start) && date.isBefore(period.end)) {
-        if (tx.isExpense) {
+        if (isTransfer) {
+          // Transfers are internal movements, not real income/expense.
+        } else if (tx.isExpense) {
           expense += tx.amount;
           expenseTxCount += 1;
           expenseByCategory[tx.category] =
@@ -1079,7 +1131,9 @@ class _StatsScreenState extends State<StatsScreen> {
         }
       } else if (!date.isBefore(period.previousStart) &&
           date.isBefore(period.previousEnd)) {
-        if (tx.isExpense) {
+        if (isTransfer) {
+          // Skip transfers in previous period too.
+        } else if (tx.isExpense) {
           previousExpense += tx.amount;
           previousExpenseTxCount += 1;
           previousExpenseByCategory[tx.category] =
@@ -1114,6 +1168,9 @@ class _StatsScreenState extends State<StatsScreen> {
       final day = DateUtils.dateOnly(tx.transactionDate);
       final diff = today.difference(day).inDays;
       if (diff < 0 || diff > 6) continue;
+      if (tx.category == 'transfer_out' || tx.category == 'transfer_in') {
+        continue;
+      }
       final idx = 6 - diff;
       if (tx.isExpense) {
         expense[idx] += tx.amount;
@@ -1160,6 +1217,22 @@ class _StatsScreenState extends State<StatsScreen> {
     return total;
   }
 
+  int _currentMonthExpense(List<TransactionRecord> txs, DateTime now) {
+    final start = DateTime(now.year, now.month, 1);
+    final end = DateTime(now.year, now.month + 1, 1);
+    var total = 0;
+    for (final tx in txs) {
+      if (!tx.isExpense) continue;
+      if (tx.category == 'transfer_out' || tx.category == 'transfer_in') {
+        continue;
+      }
+      final date = tx.transactionDate;
+      if (date.isBefore(start) || !date.isBefore(end)) continue;
+      total += tx.amount;
+    }
+    return total;
+  }
+
   List<MapEntry<String, int>> _topCategories(Map<String, int> map) {
     final list = map.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
@@ -1185,7 +1258,7 @@ class _StatsScreenState extends State<StatsScreen> {
   }
 
   String _deltaLabel(int current, int previous) {
-    if (previous <= 0) return '+0%';
+    if (previous <= 0) return current <= 0 ? '0%' : '—';
     final delta = ((current - previous) / previous) * 100;
     final sign = delta >= 0 ? '+' : '';
     return '$sign${delta.toStringAsFixed(0)}%';
@@ -1229,31 +1302,45 @@ class _StatsScreenState extends State<StatsScreen> {
     return AppUiTokens.successDeep;
   }
 
-  String _categoryLabel(String key) {
+  String _categoryLabel(String key, AppLocalizations t) {
     final normalized = key.trim().toLowerCase();
     switch (normalized) {
       case 'food':
       case 'makanan':
       case 'kuliner':
-        return 'Makanan';
+        return t.t('category_food');
       case 'transport':
       case 'transportasi':
-        return 'Transport';
+        return t.t('category_transport');
       case 'bills':
       case 'tagihan':
-        return 'Tagihan';
+        return t.t('category_bills');
       case 'shopping':
       case 'belanja':
-        return 'Belanja';
+        return t.t('category_shopping');
       case 'health':
       case 'kesehatan':
-        return 'Kesehatan';
+        return t.t('category_health');
       case 'education':
       case 'pendidikan':
-        return 'Pendidikan';
+        return t.t('category_education');
       case 'entertainment':
       case 'hiburan':
-        return 'Hiburan';
+        return t.t('category_entertainment');
+      case 'others':
+        return t.t('category_others');
+      case 'salary':
+        return t.t('category_salary');
+      case 'freelance':
+        return t.t('category_freelance');
+      case 'bonus':
+        return t.t('category_bonus');
+      case 'business':
+        return t.t('category_business');
+      case 'investment':
+        return t.t('category_investment');
+      case 'gift':
+        return t.t('category_gift');
       default:
         return key;
     }
@@ -1330,11 +1417,12 @@ class _StatsScreenState extends State<StatsScreen> {
     );
   }
 
-  String _dayLabel(int i, AppLocalizations t) {
+  String _dayLabel(int i, AppLocalizations t, DateTime now) {
     final days = t.locale.languageCode == 'en'
         ? const ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
         : const ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
-    return days[i % days.length];
+    final day = DateUtils.dateOnly(now).subtract(Duration(days: 6 - i));
+    return days[(day.weekday - 1) % days.length];
   }
 
   Widget _buildLegendDot(Color color, String label) {

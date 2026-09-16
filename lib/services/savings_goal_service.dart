@@ -53,4 +53,22 @@ class SavingsGoalService {
     await prefs.remove(keyLabel);
     notifier.value = const SavingsGoalState(targetAmount: 0, label: '');
   }
+
+  Future<Map<String, dynamic>> exportPayload() async {
+    final prefs = await SharedPreferences.getInstance();
+    return <String, dynamic>{
+      'targetAmount': prefs.getInt(keyTargetAmount) ?? 0,
+      'label': prefs.getString(keyLabel) ?? '',
+    };
+  }
+
+  Future<void> restorePayload(Map<String, dynamic> raw) async {
+    final target = (raw['targetAmount'] as num?)?.toInt() ?? 0;
+    final label = (raw['label'] as String?) ?? '';
+    if (target > 0) {
+      await save(targetAmount: target, label: label);
+    } else {
+      await clear();
+    }
+  }
 }

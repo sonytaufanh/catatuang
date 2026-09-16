@@ -13,6 +13,7 @@ class AiInsightEngine {
     required int totalBalance,
     required int cycleStartDay,
     required String languageCode,
+    required String currencySymbol,
   }) {
     if (transactions.isEmpty) return [];
 
@@ -32,7 +33,7 @@ class AiInsightEngine {
     if (streak != null) insights.add(streak);
 
     // 4. Savings opportunity
-    final savings = _savingsOpportunity(transactions, now, languageCode);
+    final savings = _savingsOpportunity(transactions, now, languageCode, currencySymbol);
     if (savings != null) insights.add(savings);
 
     // 5. Burn rate warning
@@ -61,10 +62,12 @@ class AiInsightEngine {
   ) {
     final thisMonth = txs.where((tx) =>
         tx.isExpense &&
+        tx.category != 'transfer_out' &&
         tx.transactionDate.month == now.month &&
         tx.transactionDate.year == now.year);
     final lastMonth = txs.where((tx) =>
         tx.isExpense &&
+        tx.category != 'transfer_out' &&
         tx.transactionDate.month == (now.month == 1 ? 12 : now.month - 1) &&
         tx.transactionDate.year == (now.month == 1 ? now.year - 1 : now.year));
 
@@ -84,8 +87,8 @@ class AiInsightEngine {
             ? 'Spending pace is high'
             : 'Laju pengeluaran tinggi',
         message: lang == 'en'
-            ? 'At this pace, you\'ll spend ~${increase}% more than last month. Consider reviewing your expenses.'
-            : 'Dengan laju ini, pengeluaran akan ~${increase}% lebih besar dari bulan lalu. Pertimbangkan untuk review pengeluaran.',
+            ? 'At this pace, you\'ll spend ~$increase% more than last month. Consider reviewing your expenses.'
+            : 'Dengan laju ini, pengeluaran akan ~$increase% lebih besar dari bulan lalu. Pertimbangkan untuk review pengeluaran.',
         icon: 'trending_up',
         priority: 9,
       );
@@ -150,8 +153,8 @@ class AiInsightEngine {
           ? 'Category spike: $biggestRiser'
           : 'Lonjakan kategori: $biggestRiser',
       message: lang == 'en'
-          ? '"$biggestRiser" spending is up ${percent}% compared to last month.'
-          : 'Pengeluaran "$biggestRiser" naik ${percent}% dibanding bulan lalu.',
+          ? '"$biggestRiser" spending is up $percent% compared to last month.'
+          : 'Pengeluaran "$biggestRiser" naik $percent% dibanding bulan lalu.',
       icon: 'category',
       priority: 6,
     );
@@ -199,6 +202,7 @@ class AiInsightEngine {
     List<TransactionRecord> txs,
     DateTime now,
     String lang,
+    String currencySymbol,
   ) {
     // Find recurring small expenses that add up
     final thisMonth = txs.where((tx) =>
@@ -236,8 +240,8 @@ class AiInsightEngine {
           ? 'Savings opportunity'
           : 'Peluang hemat',
       message: lang == 'en'
-          ? 'You made $maxCount "$frequentCategory" purchases this month. Reducing 2 could save you ~\$${avgPerTx * 2}.'
-          : 'Kamu melakukan $maxCount transaksi "$frequentCategory" bulan ini. Mengurangi 2x bisa hemat ~Rp ${avgPerTx * 2}.',
+          ? 'You made $maxCount "$frequentCategory" purchases this month. Reducing 2 could save you ~$currencySymbol${avgPerTx * 2}.'
+          : 'Kamu melakukan $maxCount transaksi "$frequentCategory" bulan ini. Mengurangi 2x bisa hemat ~$currencySymbol ${avgPerTx * 2}.',
       icon: 'savings',
       priority: 5,
     );
@@ -253,6 +257,7 @@ class AiInsightEngine {
 
     final thisMonth = txs.where((tx) =>
         tx.isExpense &&
+        tx.category != 'transfer_out' &&
         tx.transactionDate.month == now.month &&
         tx.transactionDate.year == now.year);
 
@@ -289,6 +294,7 @@ class AiInsightEngine {
   ) {
     final last30 = txs.where((tx) =>
         tx.isExpense &&
+        tx.category != 'transfer_out' &&
         tx.transactionDate.isAfter(now.subtract(const Duration(days: 30))));
 
     final dayTotals = List<int>.filled(7, 0);

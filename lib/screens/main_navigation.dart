@@ -50,7 +50,15 @@ class _MainNavigationState extends State<MainNavigation> {
   }
 
   Future<void> _loadOnboardingState() async {
-    final completed = await OnboardingService.instance.isCompleted();
+    var completed = false;
+    try {
+      completed = await OnboardingService.instance.isCompleted();
+    } catch (e) {
+      await ErrorLogService.instance.log(
+        source: 'onboarding_state',
+        error: e,
+      );
+    }
     if (!mounted) return;
     setState(() {
       _showOnboarding = !completed;

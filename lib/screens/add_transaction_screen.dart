@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../data/database_service.dart';
@@ -10,9 +9,11 @@ import '../services/app_localizations.dart';
 import '../services/app_settings.dart';
 import '../services/app_ui_tokens.dart';
 import '../services/analytics_service.dart';
+import '../services/attachment_service.dart';
 import '../services/error_log_service.dart';
 import '../services/master_data_service.dart';
 import '../services/thousand_separator_formatter.dart';
+import 'split_transaction_screen.dart';
 
 void showTransactionSaveResultSnack(
   BuildContext context,
@@ -139,7 +140,29 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     final compact = screenSize.height < 840 || screenSize.width < 420;
     return Scaffold(
       appBar: AppBar(
-        title: Text(_isEdit ? 'Edit Transaksi' : t.t('transaction_detail')),
+        title: Text(_isEdit ? t.t('edit_transaction') : t.t('transaction_detail')),
+        actions: [
+          if (!_isEdit)
+            IconButton(
+              tooltip: t.t('split_transaction'),
+              onPressed: () async {
+                final saved = await Navigator.push(
+                  context,
+                  MaterialPageRoute<Object?>(
+                    builder: (_) => const SplitTransactionScreen(),
+                  ),
+                );
+                if (saved == true && context.mounted) {
+                  Navigator.pop(context, <String, dynamic>{
+                    'tx_saved': true,
+                    'is_edit': false,
+                    'is_expense': true,
+                  });
+                }
+              },
+              icon: const Icon(Icons.call_split_rounded),
+            ),
+        ],
       ),
       body: SafeArea(
         child: Padding(
@@ -185,8 +208,8 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                   ),
                   decoration: InputDecoration(
                     labelText: _isExpense
-                        ? 'Nominal Pengeluaran'
-                        : 'Nominal Pemasukan',
+                        ? t.t('expense_amount')
+                        : t.t('income_amount'),
                     prefixText: '${s.currencySymbol} ',
                     border: InputBorder.none,
                     hintText: '0',
@@ -200,7 +223,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       _buildSimpleSelectorSection(
-                        title: 'Dompet',
+                        title: t.t('wallet_field'),
                         values: _wallets,
                         selected: _wallet,
                         labelBuilder: (value) => _walletLabel(t, value),
@@ -209,7 +232,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       ),
                       SizedBox(height: compact ? 8 : 10),
                       _buildSimpleSelectorSection(
-                        title: 'Kategori',
+                        title: t.t('category'),
                         values: _categories,
                         selected: _category,
                         labelBuilder: (value) => _categoryLabel(t, value),
@@ -223,7 +246,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                         controller: _note,
                         maxLines: 3,
                         decoration: InputDecoration(
-                          labelText: 'Catatan',
+                          labelText: t.t('note_field'),
                           hintText: t.t('add_note'),
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(
@@ -250,7 +273,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                           width: 18,
                           child: CircularProgressIndicator(strokeWidth: 2.2),
                         )
-                      : Text(_isEdit ? 'Simpan Perubahan' : t.t('save_data')),
+                      : Text(_isEdit ? t.t('save_changes') : t.t('save_data')),
                 ),
               ),
             ],
@@ -389,12 +412,12 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
           ),
         ),
         const SizedBox(width: 8),
-        _buildAttachmentStatusChip(),
+        _buildAttachmentStatusChip(t),
       ],
     );
   }
 
-  Widget _buildAttachmentStatusChip() {
+  Widget _buildAttachmentStatusChip(AppLocalizations t) {
     final hasAttachment = _receipt != null;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -405,7 +428,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
         borderRadius: BorderRadius.circular(999),
       ),
       child: Text(
-        hasAttachment ? 'Lokal' : 'Kosong',
+        hasAttachment ? t.t('attachment_local') : t.t('attachment_empty'),
         style: TextStyle(
           fontSize: 10,
           fontWeight: FontWeight.w700,
@@ -484,23 +507,23 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       return;
     }
     if (amount > _maxAmount) {
-      _snack('Nominal terlalu besar (maksimal Rp 1.000.000.000).');
+      _snack(t.t('max_amount_error'));
       return;
     }
     if (_wallet.trim().isEmpty || _category.trim().isEmpty) {
-      _snack('Dompet dan kategori wajib dipilih.');
+      _snack(t.t('wallet_category_required'));
       return;
     }
     final note = _note.text.trim();
     if (note.length > 140) {
-      _snack('Catatan maksimal 140 karakter.');
+      _snack(t.t('note_max_140'));
       return;
     }
     final txDate = settings.txIncludeTime
         ? _date
         : DateTime(_date.year, _date.month, _date.day);
     if (txDate.isAfter(DateTime.now().add(const Duration(days: 1)))) {
-      _snack('Tanggal transaksi tidak valid.');
+      _snack(t.t('invalid_tx_date'));
       return;
     }
     setState(() => _saving = true);
@@ -510,6 +533,10 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
         category: _category,
         isExpense: _isExpense,
       );
+      final currency = _isEdit &&
+              widget.editTransaction!.currency.trim().isNotEmpty
+          ? widget.editTransaction!.currency
+          : settings.currencyCode;
       if (_isEdit) {
         await DatabaseService.instance.updateTransaction(
           id: widget.editTransaction!.id,
@@ -521,6 +548,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
           isCleared: true,
           note: note,
           receiptPath: _receipt?.path ?? '',
+          currency: currency,
         );
       } else {
         await DatabaseService.instance.addTransaction(
@@ -532,6 +560,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
           isCleared: true,
           note: note,
           receiptPath: _receipt?.path ?? '',
+          currency: currency,
         );
       }
       await refreshTransactions();
@@ -557,7 +586,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
         source: 'add_transaction_save',
         error: e,
       );
-      _snack('Gagal menyimpan: $e');
+      _snack('${t.t('failed_to_save')}: $e');
     } finally {
       if (mounted) {
         setState(() => _saving = false);
@@ -595,7 +624,13 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   Future<void> _pickImage(ImageSource source) async {
     final picked = await _picker.pickImage(source: source, imageQuality: 85);
     if (picked == null || !mounted) return;
-    setState(() => _receipt = picked);
+    final previous = _receipt?.path;
+    final savedPath = await AttachmentService.instance.persist(picked.path);
+    if (!mounted) return;
+    if (previous != null && previous != savedPath) {
+      await AttachmentService.instance.deleteIfManaged(previous);
+    }
+    setState(() => _receipt = XFile(savedPath));
   }
 
   void _snack(String msg) {
@@ -719,7 +754,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                     ),
                     SizedBox(width: compact ? 3 : 4),
                     Text(
-                      'Ubah',
+                      t.t('change_btn'),
                       style: TextStyle(
                         color: AppUiTokens.brandBlue,
                         fontSize: _actionTextSize,

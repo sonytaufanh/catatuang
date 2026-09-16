@@ -182,6 +182,7 @@ class NotificationService {
     }
 
     if (notifTagihan) {
+      await cancelAllBills();
       await scheduleRecurringBills(recurringBillsNotifier.value);
     } else {
       await cancelAllBills();

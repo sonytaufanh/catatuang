@@ -12,11 +12,13 @@ import '../services/ai_insight_engine.dart';
 import '../services/analytics_service.dart';
 import '../services/due_date_service.dart';
 import '../services/master_data_service.dart';
+import '../services/notification_service.dart';
 import '../services/savings_goal_service.dart';
 import '../services/thousand_separator_formatter.dart';
 import '../services/user_profile_service.dart';
 import 'add_transaction_screen.dart';
 import 'ai_chat_screen.dart';
+import '../widgets/forecast_card.dart';
 import 'home/home_formatters.dart';
 import 'home/home_models.dart';
 import 'home/transaction_search_delegate.dart';
@@ -324,6 +326,12 @@ class HomeScreen extends StatelessWidget {
                     totalBalance: summary.totalBalance,
                     compact: compact,
                   ),
+                  Padding(
+                    padding: EdgeInsets.only(
+                      bottom: compact ? AppUiTokens.space3 : AppUiTokens.space4,
+                    ),
+                    child: ForecastCard(compact: compact),
+                  ),
                   _buildAiInsightsCard(
                     context: context,
                     transactions: transactions,
@@ -568,8 +576,7 @@ class HomeScreen extends StatelessWidget {
                   tabIndex: 0,
                   delay: Duration(milliseconds: 240 + (visible.length * 45)),
                   child: GestureDetector(
-                    onTap: () =>
-                        _showAllBillsSheet(context: context, bills: sorted),
+                    onTap: () => _showAllBillsSheet(context: context),
                     child: Text(
                       '+$hiddenCount ${t.t('more_bills')}',
                       style: const TextStyle(
@@ -689,6 +696,7 @@ class HomeScreen extends StatelessWidget {
       totalBalance: totalBalance,
       cycleStartDay: settings.billingCycleStart,
       languageCode: settings.languageCode,
+      currencySymbol: settings.currencySymbol,
     );
 
     if (insights.isEmpty) return const SizedBox.shrink();
@@ -1112,6 +1120,7 @@ class HomeScreen extends StatelessWidget {
                                     transactions: transactions,
                                     settings: settings,
                                     t: t,
+                                    range: summary.cycleRange,
                                   ),
                                   child: _buildCompactCategory(
                                     homeCategoryLabel(t, entry.key),
@@ -1264,7 +1273,14 @@ class HomeScreen extends StatelessWidget {
     final t = AppLocalizations.of(context);
     final sorted = [...transactions]
       ..sort((a, b) => b.transactionDate.compareTo(a.transactionDate));
-    final latest = sorted.take(2).toList(growable: false);
+    final latest = sorted
+        .where(
+          (tx) =>
+              tx.category != 'transfer_out' &&
+              tx.category != 'transfer_in',
+        )
+        .take(2)
+        .toList(growable: false);
     if (latest.isEmpty) return const SizedBox.shrink();
     return Container(
       width: double.infinity,
@@ -1411,9 +1427,16 @@ class HomeScreen extends StatelessWidget {
     required List<TransactionRecord> transactions,
     required AppSettings settings,
     required AppLocalizations t,
+    required DateTimeRange range,
   }) {
     final categoryTxs = transactions
-        .where((tx) => tx.isExpense && tx.category == categoryKey)
+        .where(
+          (tx) =>
+              tx.isExpense &&
+              tx.category == categoryKey &&
+              !tx.transactionDate.isBefore(range.start) &&
+              tx.transactionDate.isBefore(range.end),
+        )
         .toList()
       ..sort((a, b) => b.transactionDate.compareTo(a.transactionDate));
     final label = homeCategoryLabel(t, categoryKey);
@@ -1509,7 +1532,7 @@ class HomeScreen extends StatelessWidget {
                       child: ListView.separated(
                         shrinkWrap: true,
                         itemCount: categoryTxs.length,
-                        separatorBuilder: (_, __) =>
+                        separatorBuilder: (_, _) =>
                             const Divider(height: 1, indent: 44),
                         itemBuilder: (context, index) {
                           final tx = categoryTxs[index];
@@ -1667,8 +1690,17 @@ class HomeScreen extends StatelessWidget {
                               ? 0.0
                               : entry.value / summary.expenseThisCycle;
                           final txCount = transactions
-                              .where((tx) =>
-                                  tx.isExpense && tx.category == entry.key)
+                              .where(
+                                (tx) =>
+                                    tx.isExpense &&
+                                    tx.category == entry.key &&
+                                    !tx.transactionDate.isBefore(
+                                      summary.cycleRange.start,
+                                    ) &&
+                                    tx.transactionDate.isBefore(
+                                      summary.cycleRange.end,
+                                    ),
+                              )
                               .length;
                           return InkWell(
                             borderRadius: BorderRadius.circular(10),
@@ -1680,6 +1712,7 @@ class HomeScreen extends StatelessWidget {
                                 transactions: transactions,
                                 settings: settings,
                                 t: t,
+                                range: summary.cycleRange,
                               );
                             },
                             child: Padding(
@@ -1836,7 +1869,9 @@ class HomeScreen extends StatelessWidget {
 
       if (!txDate.isBefore(cycleRange.start) &&
           txDate.isBefore(cycleRange.end)) {
-        if (tx.isExpense) {
+        if (tx.category == 'transfer_out' || tx.category == 'transfer_in') {
+          // Transfers are internal movements, not real income/expense.
+        } else if (tx.isExpense) {
           expenseThisCycle += tx.amount;
           final key = tx.category;
           cycleExpensesByCategory[key] =
@@ -1847,7 +1882,7 @@ class HomeScreen extends StatelessWidget {
       }
 
       final dayIndex = _dayIndexInLast7(txDate, now);
-      if (dayIndex >= 0 && tx.isExpense) {
+      if (dayIndex >= 0 && tx.isExpense && tx.category != 'transfer_out') {
         weeklyExpenses[dayIndex] += tx.amount.toDouble();
         final categoryTotals = weeklyExpenseCategoryTotals[dayIndex];
         categoryTotals[tx.category] =
@@ -2011,7 +2046,7 @@ class HomeScreen extends StatelessWidget {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
-      builder: (context) {
+      builder: (sheetContext) {
         return SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
@@ -2039,7 +2074,7 @@ class HomeScreen extends StatelessWidget {
                   ConstrainedBox(
                     constraints: const BoxConstraints(maxHeight: 420),
                     child: ListView.separated(
-                      physics: const NeverScrollableScrollPhysics(),
+                      physics: const BouncingScrollPhysics(),
                       shrinkWrap: true,
                       itemCount: items.length,
                       separatorBuilder: (context, index) =>
@@ -2049,7 +2084,7 @@ class HomeScreen extends StatelessWidget {
                         return ListTile(
                           dense: true,
                           contentPadding: EdgeInsets.zero,
-                          onTap: () => _handleInboxAction(context, item),
+                          onTap: () => _handleInboxAction(context, sheetContext, item),
                           leading: Container(
                             width: 28,
                             height: 28,
@@ -2081,7 +2116,7 @@ class HomeScreen extends StatelessWidget {
                                 )
                               : TextButton(
                                   onPressed: () =>
-                                      _handleInboxAction(context, item),
+                                      _handleInboxAction(context, sheetContext, item),
                                   child: Text(
                                     item.actionLabel!,
                                     style: const TextStyle(
@@ -2129,14 +2164,20 @@ class HomeScreen extends StatelessWidget {
             icon: Icons.receipt_long_rounded,
             color: AppUiTokens.brandBlue,
             sortValue: now.millisecondsSinceEpoch + (1000 - dayDiff),
-            actionLabel: 'Bayar',
+            actionLabel: t.t('action_pay'),
             actionType: 'open_bills',
           ),
         );
       }
     }
 
-    final recentTransactions = transactions.take(8);
+    final recentTransactions = transactions
+        .where(
+          (tx) =>
+              tx.category != 'transfer_out' &&
+              tx.category != 'transfer_in',
+        )
+        .take(8);
     for (final tx in recentTransactions) {
       final title = tx.isExpense
           ? t.t('notif_expense_added')
@@ -2154,7 +2195,7 @@ class HomeScreen extends StatelessWidget {
               ? AppUiTokens.dangerDark
               : AppUiTokens.successDeep,
           sortValue: tx.transactionDate.millisecondsSinceEpoch,
-          actionLabel: 'Tambah Lagi',
+          actionLabel: t.t('action_add_more'),
           actionType: 'repeat_tx',
           isExpense: tx.isExpense,
           category: tx.category,
@@ -2176,18 +2217,19 @@ class HomeScreen extends StatelessWidget {
   }
 
   Future<void> _handleInboxAction(
-    BuildContext context,
+    BuildContext rootContext,
+    BuildContext sheetContext,
     HomeInboxItem item,
   ) async {
     if (item.actionType == 'open_bills') {
-      Navigator.pop(context);
-      _showAllBillsSheet(context: context, bills: recurringBillsNotifier.value);
+      Navigator.pop(sheetContext);
+      _showAllBillsSheet(context: rootContext);
       return;
     }
     if (item.actionType == 'repeat_tx') {
-      Navigator.pop(context);
+      Navigator.pop(sheetContext);
       final result = await Navigator.push(
-        context,
+        rootContext,
         MaterialPageRoute<Object?>(
           builder: (_) => AddTransactionScreen(
             initialIsExpense: item.isExpense,
@@ -2196,29 +2238,25 @@ class HomeScreen extends StatelessWidget {
           ),
         ),
       );
-      if (!context.mounted) return;
+      if (!rootContext.mounted) return;
       showTransactionSaveResultSnack(
-        context,
+        rootContext,
         result,
         fallbackIsExpense: item.isExpense,
       );
     }
   }
 
-  void _showAllBillsSheet({
-    required BuildContext context,
-    required List<RecurringBill> bills,
-  }) {
+  void _showAllBillsSheet({required BuildContext context}) {
     final settings = AppSettingsScope.of(context);
     final t = AppLocalizations.of(context);
-    final now = DateTime.now();
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
-      builder: (context) {
+      builder: (sheetContext) {
         return SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
@@ -2237,90 +2275,111 @@ class HomeScreen extends StatelessWidget {
                     ),
                     const Spacer(),
                     FilledButton.tonalIcon(
-                      onPressed: () => _showRecurringBillForm(context: context),
+                      onPressed: () =>
+                          _showRecurringBillForm(context: sheetContext),
                       icon: const Icon(Icons.add_rounded, size: 16),
                       label: Text(t.t('add_recurring_bill')),
                     ),
                   ],
                 ),
                 const SizedBox(height: 10),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 360),
-                  child: ListView.separated(
-                    physics: const NeverScrollableScrollPhysics(),
-                    shrinkWrap: true,
-                    itemCount: bills.length,
-                    separatorBuilder: (context, index) =>
-                        const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final bill = bills[index];
-                      final dayDiff = DueDateService.daysUntilDueDate(
-                        from: now,
-                        dueDay: bill.dueDay,
-                      );
-                      final dueLabel = dayDiff == 0
-                          ? t.t('due_today')
-                          : '$dayDiff ${t.t('due_in_days')}';
-                      return ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: const Icon(
-                          Icons.receipt_long_rounded,
-                          color: AppUiTokens.brandBlue,
-                          size: 18,
-                        ),
-                        title: Text(
-                          bill.name,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
+                ValueListenableBuilder<List<RecurringBill>>(
+                  valueListenable: recurringBillsNotifier,
+                  builder: (context, bills, _) {
+                    if (bills.isEmpty) {
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        child: Center(
+                          child: Text(
+                            t.t('no_data'),
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: AppUiTokens.textMuted,
+                            ),
                           ),
                         ),
-                        subtitle: Text(
-                          '${t.t('due_date')} ${bill.dueDay} ($dueLabel)',
-                          style: const TextStyle(fontSize: 10),
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              settings.formatCurrency(bill.amount),
+                      );
+                    }
+                    final now = DateTime.now();
+                    return ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 360),
+                      child: ListView.separated(
+                        physics: const BouncingScrollPhysics(),
+                        shrinkWrap: true,
+                        itemCount: bills.length,
+                        separatorBuilder: (context, index) =>
+                            const Divider(height: 1),
+                        itemBuilder: (context, index) {
+                          final bill = bills[index];
+                          final dayDiff = DueDateService.daysUntilDueDate(
+                            from: now,
+                            dueDay: bill.dueDay,
+                          );
+                          final dueLabel = dayDiff == 0
+                              ? t.t('due_today')
+                              : '$dayDiff ${t.t('due_in_days')}';
+                          return ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(
+                              Icons.receipt_long_rounded,
+                              color: AppUiTokens.brandBlue,
+                              size: 18,
+                            ),
+                            title: Text(
+                              bill.name,
                               style: const TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w800,
-                                color: AppUiTokens.dangerDark,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
                               ),
                             ),
-                            PopupMenuButton<String>(
-                              onSelected: (value) async {
-                                if (value == 'edit') {
-                                  await _showRecurringBillForm(
-                                    context: context,
-                                    initial: bill,
-                                  );
-                                } else if (value == 'delete') {
-                                  await _confirmDeleteRecurringBill(
-                                    context: context,
-                                    bill: bill,
-                                  );
-                                }
-                              },
-                              itemBuilder: (context) => [
-                                PopupMenuItem<String>(
-                                  value: 'edit',
-                                  child: Text(t.t('edit')),
+                            subtitle: Text(
+                              '${t.t('due_date')} ${bill.dueDay} ($dueLabel)',
+                              style: const TextStyle(fontSize: 10),
+                            ),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  settings.formatCurrency(bill.amount),
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppUiTokens.dangerDark,
+                                  ),
                                 ),
-                                PopupMenuItem<String>(
-                                  value: 'delete',
-                                  child: Text(t.t('delete')),
+                                PopupMenuButton<String>(
+                                  onSelected: (value) async {
+                                    if (value == 'edit') {
+                                      await _showRecurringBillForm(
+                                        context: sheetContext,
+                                        initial: bill,
+                                      );
+                                    } else if (value == 'delete') {
+                                      await _confirmDeleteRecurringBill(
+                                        context: sheetContext,
+                                        bill: bill,
+                                      );
+                                    }
+                                  },
+                                  itemBuilder: (context) => [
+                                    PopupMenuItem<String>(
+                                      value: 'edit',
+                                      child: Text(t.t('edit')),
+                                    ),
+                                    PopupMenuItem<String>(
+                                      value: 'delete',
+                                      child: Text(t.t('delete')),
+                                    ),
+                                  ],
                                 ),
                               ],
                             ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
+                          );
+                        },
+                      ),
+                    );
+                  },
                 ),
               ],
             ),
@@ -2498,11 +2557,12 @@ class HomeScreen extends StatelessWidget {
           RecurringBill(id: 0, name: name, amount: amount, dueDay: dueDay),
         );
       }
+      await NotificationService.instance.syncFromPreferences();
     } catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Gagal menyimpan: $e')));
+      ).showSnackBar(SnackBar(content: Text('${t.t('save_failed')}: $e')));
     }
   }
 
@@ -2570,7 +2630,15 @@ class HomeScreen extends StatelessWidget {
       ),
     );
     if (yes != true) return;
-    await deleteRecurringBill(bill.id);
+    try {
+      await deleteRecurringBill(bill.id);
+      await NotificationService.instance.syncFromPreferences();
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('${t.t('delete_failed')}: $e')));
+    }
   }
 
   void _showMetricInfoSheet({

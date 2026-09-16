@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -14,6 +15,7 @@ class SessionService {
   static const String _localPasswordHashKey = 'session_local_password_hash_v1';
 
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  final Random _random = Random.secure();
 
   Future<bool> isSignedIn() async {
     final prefs = await SharedPreferences.getInstance();
@@ -77,19 +79,70 @@ class SessionService {
     if (storedEmail == null || storedHash == null) return false;
     final normalizedEmail = email.trim().toLowerCase();
     if (storedEmail.trim().toLowerCase() != normalizedEmail) return false;
-    final hash = await _hashCredentials(
+
+    if (storedHash.contains(':')) {
+      final parts = storedHash.split(':');
+      if (parts.length != 2) return false;
+      final salt = base64Decode(parts[0]);
+      final expectedHash = parts[1];
+      final hash = await _hashWithSalt(
+        email: normalizedEmail,
+        password: password.trim(),
+        salt: salt,
+      );
+      return hash == expectedHash;
+    }
+
+    final legacyHash = await _hashLegacy(
       email: normalizedEmail,
       password: password.trim(),
     );
-    return storedHash == hash;
+    if (legacyHash == storedHash) {
+      await _secureStorage.write(
+        key: _localPasswordHashKey,
+        value: await _hashCredentials(
+          email: normalizedEmail,
+          password: password.trim(),
+        ),
+      );
+      return true;
+    }
+    return false;
   }
 
   Future<String> _hashCredentials({
     required String email,
     required String password,
   }) async {
+    final salt = _generateSalt();
+    final hash = await _hashWithSalt(
+      email: email,
+      password: password,
+      salt: salt,
+    );
+    return '${base64Encode(salt)}:$hash';
+  }
+
+  Future<String> _hashWithSalt({
+    required String email,
+    required String password,
+    required List<int> salt,
+  }) async {
+    final payload = utf8.encode('$salt::$email::$password');
+    final digest = await Sha256().hash(payload);
+    return base64Encode(digest.bytes);
+  }
+
+  Future<String> _hashLegacy({
+    required String email,
+    required String password,
+  }) async {
     final payload = utf8.encode('$email::$password');
     final digest = await Sha256().hash(payload);
     return base64Encode(digest.bytes);
+  }
+
+  List<int> _generateSalt() {
+    return List<int>.generate(16, (_) => _random.nextInt(256), growable: false);
   }
 }

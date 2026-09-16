@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
+
 import 'database_service.dart';
+import 'models/recurring_bill_record.dart';
 
 class RecurringBill {
   final int id;
@@ -24,15 +28,29 @@ const List<(String, int, int)> _defaultSeedBills = <(String, int, int)>[
   ('Internet Rumah', 350000, 15),
 ];
 
+StreamSubscription<List<RecurringBillRecord>>? _recurringBillSubscription;
+
 Future<void> initRecurringBillStore() async {
   await refreshRecurringBills();
+  _recurringBillSubscription ??= DatabaseService.instance
+      .watchRecurringBills()
+      .listen(_applyRecords);
 }
+
+void _applyRecords(List<RecurringBillRecord> records) {
+  recurringBillsNotifier.value = records.map(_toBill).toList(growable: false);
+}
+
+RecurringBill _toBill(RecurringBillRecord record) => RecurringBill(
+  id: record.id,
+  name: record.name,
+  amount: record.amount,
+  dueDay: record.dueDay,
+);
 
 Future<void> refreshRecurringBills() async {
   final records = await DatabaseService.instance.getAllRecurringBills();
-  recurringBillsNotifier.value = records
-      .map((e) => RecurringBill(id: e.id, name: e.name, amount: e.amount, dueDay: e.dueDay))
-      .toList(growable: false);
+  _applyRecords(records);
 }
 
 Future<void> addRecurringBill(RecurringBill bill) async {

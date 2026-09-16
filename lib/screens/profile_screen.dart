@@ -26,6 +26,8 @@ import 'home/home_formatters.dart';
 import 'home/transaction_search_delegate.dart';
 import 'profile/profile_tiles.dart';
 import 'app_lock_gate.dart';
+import 'debts_screen.dart';
+import 'import_csv_screen.dart';
 import 'legal_center_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -1036,7 +1038,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         source: 'profile_bill_form_save',
         error: e,
       );
-      _showAction('Gagal menyimpan tagihan: $e');
+      _showAction('${t.t('save_failed')}: $e');
     }
   }
 
@@ -1086,7 +1088,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             setModalState(() {});
                           },
                           icon: const Icon(Icons.sync_rounded),
-                          label: const Text('Sync sekarang'),
+                          label: Text(t.t('sync_now')),
                         ),
                       ],
                     ),
@@ -1204,7 +1206,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                           ),
                                           const SizedBox(height: 2),
                                           Text(
-                                            'Tanggal ${tpl.dayOfMonth} | ${tpl.wallet} | ${tpl.category}',
+                                            tpl.isTransfer
+                                                ? 'Tanggal ${tpl.dayOfMonth} | ${tpl.wallet} → ${tpl.transferToWallet}'
+                                                : 'Tanggal ${tpl.dayOfMonth} | ${tpl.wallet} | ${tpl.category}',
                                             style: const TextStyle(
                                               fontSize: 10.5,
                                               color: AppUiTokens.textMuted,
@@ -1232,7 +1236,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                             .createNow(tpl);
                                         if (!mounted) return;
                                         _showAction(
-                                          'Transaksi manual berhasil dibuat dari template.',
+                                          t.t('manual_tx_created'),
                                         );
                                       },
                                       icon: const Icon(
@@ -1240,7 +1244,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                         size: 18,
                                         color: AppUiTokens.warning,
                                       ),
-                                      tooltip: 'Buat sekarang',
+                                      tooltip: t.t('create_now'),
                                     ),
                                     IconButton(
                                       onPressed: () async {
@@ -1257,14 +1261,55 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                     ),
                                     IconButton(
                                       onPressed: () async {
-                                        await RecurringTransactionService
-                                            .instance
-                                            .deleteTemplate(tpl.id);
-                                        setModalState(() {});
-                                        if (!mounted) return;
-                                        _showAction(
-                                          t.t('recurring_tx_deleted'),
-                                        );
+                                        final confirmed =
+                                            await showDialog<bool>(
+                                              context: context,
+                                              builder: (dialogContext) =>
+                                                  AlertDialog(
+                                                    title: Text(t.t('delete')),
+                                                    content: Text(tpl.name),
+                                                    actions: [
+                                                      TextButton(
+                                                        onPressed: () =>
+                                                            Navigator.pop(
+                                                              dialogContext,
+                                                              false,
+                                                            ),
+                                                        child: Text(t.t('cancel')),
+                                                      ),
+                                                      FilledButton(
+                                                        onPressed: () =>
+                                                            Navigator.pop(
+                                                              dialogContext,
+                                                              true,
+                                                            ),
+                                                        child: Text(t.t('delete')),
+                                                      ),
+                                                    ],
+                                                  ),
+                                            );
+                                        if (confirmed != true) return;
+                                        try {
+                                          await RecurringTransactionService
+                                              .instance
+                                              .deleteTemplate(tpl.id);
+                                          if (context.mounted) {
+                                            setModalState(() {});
+                                          }
+                                          if (!mounted) return;
+                                          _showAction(
+                                            t.t('recurring_tx_deleted'),
+                                          );
+                                        } catch (e) {
+                                          await ErrorLogService.instance.log(
+                                            source: 'profile_template_delete',
+                                            error: e,
+                                          );
+                                          if (!mounted) return;
+                                          _showAction(
+                                            '${t.t('delete_failed')}: $e',
+                                          );
+                                        }
                                       },
                                       icon: const Icon(
                                         Icons.delete_outline_rounded,
@@ -1307,13 +1352,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
       text: initial == null ? '' : initial.dayOfMonth.toString(),
     );
     final noteController = TextEditingController(text: initial?.note ?? '');
-    var isExpense = initial?.isExpense ?? true;
+    var isTransfer = initial?.isTransfer ?? false;
+    var isExpense = isTransfer ? true : (initial?.isExpense ?? true);
     var categories = isExpense ? expenseCategories : incomeCategories;
     var wallet = initial?.wallet ?? (wallets.isEmpty ? 'cash' : wallets.first);
     var category =
         initial?.category ?? (categories.isEmpty ? 'food' : categories.first);
+    var destWallet =
+        initial?.transferToWallet ??
+        (wallets.length > 1
+            ? wallets[1]
+            : (wallets.isEmpty ? 'bank' : wallets.first));
     if (!wallets.contains(wallet) && wallets.isNotEmpty) {
       wallet = wallets.first;
+    }
+    if (!wallets.contains(destWallet) && wallets.isNotEmpty) {
+      destWallet = wallets.first;
     }
     if (!categories.contains(category) && categories.isNotEmpty) {
       category = categories.first;
@@ -1408,7 +1462,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       children: [
                         Expanded(
                           child: DropdownButtonFormField<String>(
-                            initialValue: isExpense ? 'expense' : 'income',
+                            initialValue: isTransfer
+                                ? 'transfer'
+                                : (isExpense ? 'expense' : 'income'),
                             decoration: _sheetFieldDecoration(
                               label: t.t('recurring_tx_type'),
                               icon: Icons.compare_arrows_rounded,
@@ -1422,9 +1478,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 value: 'income',
                                 child: Text(t.t('recurring_tx_income')),
                               ),
+                              DropdownMenuItem(
+                                value: 'transfer',
+                                child: Text(t.t('transfer')),
+                              ),
                             ],
                             onChanged: (value) {
                               setModalState(() {
+                                isTransfer = value == 'transfer';
                                 isExpense = value != 'income';
                                 categories = isExpense
                                     ? expenseCategories
@@ -1432,6 +1493,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 if (!categories.contains(category) &&
                                     categories.isNotEmpty) {
                                   category = categories.first;
+                                }
+                                if (isTransfer && destWallet == wallet) {
+                                  destWallet = wallets.firstWhere(
+                                    (w) => w != wallet,
+                                    orElse: () => wallet,
+                                  );
                                 }
                               });
                             },
@@ -1480,26 +1547,47 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: DropdownButtonFormField<String>(
-                            initialValue: category,
-                            decoration: _sheetFieldDecoration(
-                              label: t.t('category'),
-                              icon: Icons.grid_view_rounded,
-                            ),
-                            items: categories
-                                .map(
-                                  (e) => DropdownMenuItem(
-                                    value: e,
-                                    child: Text(e),
+                          child: isTransfer
+                              ? DropdownButtonFormField<String>(
+                                  initialValue: destWallet,
+                                  decoration: _sheetFieldDecoration(
+                                    label: t.t('destination_wallet'),
+                                    icon: Icons.south_west_rounded,
                                   ),
+                                  items: wallets
+                                      .map(
+                                        (e) => DropdownMenuItem(
+                                          value: e,
+                                          child: Text(e),
+                                        ),
+                                      )
+                                      .toList(growable: false),
+                                  onChanged: (value) {
+                                    if (value != null) {
+                                      setModalState(() => destWallet = value);
+                                    }
+                                  },
                                 )
-                                .toList(growable: false),
-                            onChanged: (value) {
-                              if (value != null) {
-                                setModalState(() => category = value);
-                              }
-                            },
-                          ),
+                              : DropdownButtonFormField<String>(
+                                  initialValue: category,
+                                  decoration: _sheetFieldDecoration(
+                                    label: t.t('category'),
+                                    icon: Icons.grid_view_rounded,
+                                  ),
+                                  items: categories
+                                      .map(
+                                        (e) => DropdownMenuItem(
+                                          value: e,
+                                          child: Text(e),
+                                        ),
+                                      )
+                                      .toList(growable: false),
+                                  onChanged: (value) {
+                                    if (value != null) {
+                                      setModalState(() => category = value);
+                                    }
+                                  },
+                                ),
                         ),
                       ],
                     ),
@@ -1561,34 +1649,42 @@ class _ProfileScreenState extends State<ProfileScreen> {
         amount > _maxAmount ||
         day < 1 ||
         day > 31) {
-      _showAction(t.t('invalid_amount'));
+      _showAction(t.t('invalid_recurring_bill'));
       return;
     }
-    if (wallet.trim().isEmpty || category.trim().isEmpty) {
-      _showAction('Dompet/kategori tidak valid');
+    if (wallet.trim().isEmpty ||
+        (!isTransfer && category.trim().isEmpty)) {
+      _showAction(t.t('wallet_category_required'));
+      return;
+    }
+    if (isTransfer && destWallet == wallet) {
+      _showAction(t.t('same_wallet_error'));
       return;
     }
     if (note.length > 140) {
-      _showAction('Catatan maksimal 140 karakter');
+      _showAction(t.t('note_max_140'));
       return;
     }
     await RecurringTransactionService.instance.upsertTemplate(
       RecurringTransactionTemplate(
         id: initial?.id ?? '',
         name: name,
-        isExpense: isExpense,
+        isExpense: isTransfer ? true : isExpense,
         amount: amount,
         wallet: wallet,
-        category: category,
+        category: isTransfer ? 'transfer_out' : category,
         dayOfMonth: day,
         note: note,
         active: true,
+        transferToWallet: isTransfer ? destWallet : '',
       ),
     );
     final created = await RecurringTransactionService.instance
         .syncDueTransactions();
     _showAction(
-      created > 0 ? ' -  transaksi dibuat' : ' - akan berjalan mulai tanggal ',
+      created > 0
+          ? t.t('recurring_tx_created_now')
+          : t.t('recurring_tx_scheduled'),
     );
   }
 
@@ -1623,7 +1719,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         source: 'profile_bill_delete',
         error: e,
       );
-      _showAction('Gagal menghapus tagihan: $e');
+      _showAction('${t.t('delete_failed')}: $e');
     }
   }
 
@@ -1701,6 +1797,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   await _showRecurringTransactionManager();
                 },
               ),
+              ListTile(
+                leading: const Icon(
+                  Icons.handshake_rounded,
+                  color: AppUiTokens.brandBlueDark,
+                ),
+                title: Text(t.t('debts')),
+                subtitle: Text(t.t('debts_desc')),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<Object?>(
+                      builder: (_) => const DebtsScreen(),
+                    ),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(
+                  Icons.upload_file_rounded,
+                  color: AppUiTokens.warning,
+                ),
+                title: Text(t.t('import_csv')),
+                subtitle: Text(t.t('import_csv_desc')),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<Object?>(
+                      builder: (_) => const ImportCsvScreen(),
+                    ),
+                  );
+                },
+              ),
               const SizedBox(height: 8),
             ],
           ),
@@ -1736,16 +1866,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
               final raw = controller.text.trim();
               if (raw.isEmpty) return;
               if (raw.length < 2 || raw.length > 30) {
-                _showAction('Panjang nama harus 2-30 karakter');
+                _showAction(t.t('name_length_2_30'));
                 return;
               }
-              final normalized = raw.toLowerCase();
+              final normalized = MasterDataService.normalizeMasterKey(raw);
+              if (normalized.isEmpty) return;
               final existing = await readItems();
-              final duplicate = existing.any(
-                (e) => e.toLowerCase() == normalized,
-              );
-              if (duplicate) {
-                _showAction('Data sudah ada');
+              if (existing.contains(normalized)) {
+                _showAction(t.t('data_already_exists'));
                 return;
               }
               if (isWallet) {
@@ -1860,7 +1988,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 if (isWallet && tx.wallet == oldValue) {
                   updatedWallet = normalized;
                   needsUpdate = true;
-                } else if (!isWallet && tx.category == oldValue) {
+                } else if (!isWallet &&
+                    tx.category == oldValue &&
+                    (isIncomeCategory ? !tx.isExpense : tx.isExpense)) {
                   updatedCategory = normalized;
                   needsUpdate = true;
                 }
@@ -1878,8 +2008,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   );
                 }
               }
+              if (isWallet) {
+                await RecurringTransactionService.instance
+                    .renameWalletReferences(
+                      oldValue: oldValue,
+                      newValue: normalized,
+                    );
+              } else {
+                await RecurringTransactionService.instance
+                    .renameCategoryReferences(
+                      isExpense: !isIncomeCategory,
+                      oldValue: oldValue,
+                      newValue: normalized,
+                    );
+              }
               await refreshTransactions();
-              setModalState(() {});
+              if (context.mounted) setModalState(() {});
             }
 
             Future<void> editOpeningBalance(String wallet) async {
@@ -2304,6 +2448,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   subtitle: Text(t.t('remove_pin_desc')),
                   onTap: () async {
                     Navigator.pop(context);
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (dialogContext) => AlertDialog(
+                        title: Text(t.t('remove_pin')),
+                        content: Text(t.t('remove_pin_desc')),
+                        actions: [
+                          TextButton(
+                            onPressed: () =>
+                                Navigator.pop(dialogContext, false),
+                            child: Text(t.t('cancel')),
+                          ),
+                          FilledButton(
+                            onPressed: () =>
+                                Navigator.pop(dialogContext, true),
+                            child: Text(t.t('delete')),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (confirmed != true) return;
                     await AppPasscodeService.instance.disablePasscode();
                     if (!mounted) return;
                     _showAction(t.t('pin_removed'));
@@ -2585,6 +2749,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required String format,
     required String period,
   }) async {
+    final t = AppLocalizations.of(context);
     final txs = transactionsNotifier.value;
     final (start, endExclusive) = _resolvePeriodRange(period);
     try {
@@ -2607,11 +2772,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
         properties: {'format': format, 'period': period, 'count': txs.length},
       );
       if (!mounted) return;
-      _showAction('Export berhasil: $path');
+      _showAction('${t.t('export_success')}: $path');
     } catch (e) {
       await ErrorLogService.instance.log(source: 'export_report', error: e);
       if (!mounted) return;
-      _showAction('Export gagal: $e');
+      _showAction('${t.t('export_failed')}: $e');
     }
   }
 
@@ -2688,6 +2853,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
             _showAction(
               'Kunci diimpor, tapi tidak cocok dengan backup terbaru.',
             );
+          } else if (valid == null) {
+            _showAction(
+              'Kunci backup diimpor dari file. Belum ada backup terenkripsi untuk diverifikasi.',
+            );
           } else {
             _showAction('Kunci backup berhasil diimpor dari file');
           }
@@ -2743,6 +2912,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
         if (valid == false) {
           _showAction(
             'Kunci berhasil diimpor, tapi tidak cocok dengan backup terbaru.',
+          );
+        } else if (valid == null) {
+          _showAction(
+            'Kunci backup berhasil diimpor. Belum ada backup terenkripsi untuk diverifikasi.',
           );
         } else {
           _showAction('Kunci backup berhasil diimpor');
@@ -2907,13 +3080,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
     if (shouldRestore != true) return;
 
-    final restored = await BackupService.instance.restoreFromLatestBackup();
-    if (!mounted) return;
-    if (restored) {
-      await AnalyticsService.instance.track('restore_success');
-      _showAction('Restore berhasil');
-    } else {
-      _showAction('Backup tidak ditemukan');
+    try {
+      final restored = await BackupService.instance.restoreFromLatestBackup();
+      if (!mounted) return;
+      if (restored) {
+        await AnalyticsService.instance.track('restore_success');
+        _showAction('Restore berhasil');
+      } else {
+        _showAction('Backup tidak ditemukan');
+      }
+    } catch (e) {
+      await ErrorLogService.instance.log(source: 'profile_restore', error: e);
+      if (!mounted) return;
+      _showAction(
+        'Restore gagal: kunci backup tidak cocok atau berkas rusak.',
+      );
     }
   }
 
@@ -2922,6 +3103,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
     setState(() => _backupBusy = true);
     try {
       await task();
+    } catch (e) {
+      await ErrorLogService.instance.log(source: 'backup_task', error: e);
+      if (mounted) {
+        _showAction('Operasi backup gagal: $e');
+      }
     } finally {
       if (mounted) {
         setState(() => _backupBusy = false);
@@ -2964,6 +3150,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _loadPreferences() async {
     final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
     setState(() {
       notifTagihan =
           prefs.getBool(NotificationService.keyNotifTagihan) ?? notifTagihan;
@@ -3200,7 +3387,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           }
                           _showAction('Limit anggaran berhasil direset');
                         },
-                        child: const Text('Reset'),
+                        child: Text(t.t('reset')),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -3218,7 +3405,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               budgetLimit;
                           if (parsed <= 0 || parsed > _maxAmount) {
                             _showAction(
-                              'Limit anggaran harus 1 sampai Rp 1.000.000.000',
+                              t.t('budget_limit_invalid'),
+                            );
+                            return;
+                          }
+                          if (tempScopeType != 'all' &&
+                              tempScopeValue.trim().isEmpty) {
+                            _showAction(
+                              t.t('budget_scope_required'),
                             );
                             return;
                           }
