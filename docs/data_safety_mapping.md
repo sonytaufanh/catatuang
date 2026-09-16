@@ -14,8 +14,20 @@
 ## Data Shared
 - Tidak ada data yang dijual ke pihak ketiga.
 - Tidak ada ad network tracking aktif.
+- Crash reporting opsional via Sentry (hanya aktif bila `SENTRY_DSN` di-set):
+  mengirim stack trace + konteks perangkat. Tidak mengirim transaksi/keuangan.
+- Analytics produk bersifat lokal; tidak ada pengiriman ke server pihak ketiga.
+
+## Data Storage Detail
+- Database lokal `catatuang.db` memakai **SQLite + SQLCipher** (terenkripsi
+  at-rest) dengan kunci 32-byte yang disimpan di secure storage perangkat.
+- `flutter_secure_storage`: PIN/password hash (PBKDF2), kunci backup.
+- `SharedPreferences`: preferensi, sesi lokal, saldo awal, anggaran.
+- Backup: file JSON terenkripsi di dokumen aplikasi (AES-GCM).
 
 ## User Controls
-- Hapus data via clear app data / restore flow.
-- Matikan notifikasi kapan saja.
-- Ganti/hapus PIN keamanan.
+- Menu Profil -> Keamanan -> **Hapus Semua Data** menghapus seluruh data lokal,
+  profil, dan backup di perangkat.
+- Clear app data / uninstall.
+- Matikan notifikasi, ganti/hapus PIN, matikan auto backup.
+- Ekspor laporan (CSV/PDF) dan ekspor kunci backup kapan saja.

@@ -48,6 +48,17 @@ class CategoryBudgetService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Removes every category budget.
+  Future<void> clearAll() async {
+    final prefs = await SharedPreferences.getInstance();
+    final index = prefs.getStringList(_indexKey) ?? <String>[];
+    for (final category in index) {
+      await prefs.remove('$_prefix$category');
+    }
+    await prefs.remove(_indexKey);
+    notifyListeners();
+  }
+
   Future<Map<String, dynamic>> exportPayload() async {
     final budgets = await getAllBudgets();
     return <String, dynamic>{...budgets};

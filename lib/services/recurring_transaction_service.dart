@@ -272,6 +272,19 @@ class RecurringTransactionService {
     return requestedDay.clamp(1, lastDay);
   }
 
+  /// Removes every recurring transaction template and its generated flags.
+  Future<void> clearAll() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_keyTemplates);
+    final generatedKeys = prefs
+        .getKeys()
+        .where((key) => key.startsWith('recurring_tx_generated_'))
+        .toList(growable: false);
+    for (final key in generatedKeys) {
+      await prefs.remove(key);
+    }
+  }
+
   Future<List<Map<String, dynamic>>> exportPayload() async {
     final list = await templates();
     return list.map((e) => e.toJson()).toList(growable: false);

@@ -49,6 +49,30 @@ class MasterDataService extends ChangeNotifier {
     _initialized = true;
   }
 
+  /// Re-reads persisted master data after an external change (e.g. wipe).
+  Future<void> reload() async {
+    _openingBalances = await walletOpeningBalances();
+    notifyListeners();
+  }
+
+  /// Removes all custom wallets, categories and opening balances.
+  Future<void> clearAll() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_walletsKey);
+    await prefs.remove(_categoriesKey);
+    await prefs.remove(_expenseCategoriesKey);
+    await prefs.remove(_incomeCategoriesKey);
+    final balanceKeys = prefs
+        .getKeys()
+        .where((key) => key.startsWith(_openingBalancePrefix))
+        .toList(growable: false);
+    for (final key in balanceKeys) {
+      await prefs.remove(key);
+    }
+    _openingBalances = const <String, int>{};
+    notifyListeners();
+  }
+
   int get openingBalanceTotal {
     var total = 0;
     for (final amount in _openingBalances.values) {

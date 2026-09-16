@@ -1,30 +1,40 @@
-import 'package:isar/isar.dart';
-
-part 'transaction_record.g.dart';
-
-@collection
+/// Plain data model persisted in the `transactions` table.
 class TransactionRecord {
-  Id id = Isar.autoIncrement;
+  TransactionRecord({
+    this.id = 0,
+    this.isExpense = true,
+    this.amount = 0,
+    this.wallet = '',
+    this.category = '',
+    DateTime? transactionDate,
+    this.isCleared = true,
+    this.note = '',
+    this.receiptPath = '',
+    this.transferGroupId = '',
+    this.splitGroupId = '',
+    this.currency = '',
+    DateTime? createdAt,
+  }) : transactionDate = transactionDate ?? DateTime.now(),
+       createdAt = createdAt ?? DateTime.now();
 
-  late bool isExpense;
-  late int amount;
-  late String wallet;
-  late String category;
-  late DateTime transactionDate;
-  late bool isCleared;
-  String note = '';
-  String receiptPath = '';
+  int id;
+  bool isExpense;
+  int amount;
+  String wallet;
+  String category;
+  DateTime transactionDate;
+  bool isCleared;
+  String note;
+  String receiptPath;
 
   /// Identifier shared by the two legs of a transfer. Empty for regular
-  /// income/expense transactions. Older transfers may have an empty value
-  /// and are paired heuristically.
-  String transferGroupId = '';
+  /// income/expense transactions.
+  String transferGroupId;
 
-  /// Identifier shared by the parts of a split transaction. Empty for
-  /// non-split transactions.
-  String splitGroupId = '';
+  /// Identifier shared by the parts of a split transaction.
+  String splitGroupId;
 
   /// ISO currency code of [amount] at the time it was recorded.
-  String currency = '';
-  late DateTime createdAt;
+  String currency;
+  DateTime createdAt;
 }

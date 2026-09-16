@@ -1,28 +1,37 @@
-import 'package:isar/isar.dart';
-
-part 'debt_record.g.dart';
-
-@collection
+/// Plain data model persisted in the `debts` table.
 class DebtRecord {
-  Id id = Isar.autoIncrement;
+  DebtRecord({
+    this.id = 0,
+    this.name = '',
+    this.isReceivable = false,
+    this.principal = 0,
+    this.remaining = 0,
+    this.dueDate,
+    this.note = '',
+    this.interestRatePercent = 0,
+    this.isSettled = false,
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? DateTime.now();
+
+  int id;
 
   /// Counterparty name, e.g. "Budi" or "Bank ABC".
-  late String name;
+  String name;
 
   /// true = receivable (someone owes me); false = payable (I owe).
-  late bool isReceivable;
+  bool isReceivable;
 
   /// Original amount borrowed/lent.
-  late int principal;
+  int principal;
 
   /// Outstanding amount still to be settled.
-  late int remaining;
+  int remaining;
 
   DateTime? dueDate;
-  String note = '';
+  String note;
 
   /// Annual interest rate in percent (0 for interest-free debt).
-  double interestRatePercent = 0;
-  late bool isSettled;
-  late DateTime createdAt;
+  double interestRatePercent;
+  bool isSettled;
+  DateTime createdAt;
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:ui';
+import 'package:sentry_flutter/sentry_flutter.dart';
 import 'data/database_service.dart';
 import 'data/debt_store.dart';
 import 'data/recurring_bill_store.dart';
@@ -18,6 +19,13 @@ import 'services/recurring_transaction_service.dart';
 import 'services/user_profile_service.dart';
 
 const Duration _startupStepTimeout = Duration(seconds: 5);
+
+const String _sentryDsn = String.fromEnvironment('SENTRY_DSN');
+const String _appEnvironment = String.fromEnvironment(
+  'APP_ENV',
+  defaultValue: 'production',
+);
+bool get _sentryEnabled => _sentryDsn.isNotEmpty;
 
 class StartupStatus extends ChangeNotifier {
   String currentStep = 'Menyiapkan aplikasi...';
@@ -45,12 +53,36 @@ class StartupStatus extends ChangeNotifier {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (_sentryEnabled) {
+    await SentryFlutter.init(
+      (options) {
+        options.dsn = _sentryDsn;
+        options.environment = _appEnvironment;
+        options.tracesSampleRate = 0.2;
+        options.attachStacktrace = true;
+      },
+      appRunner: _bootstrap,
+    );
+    return;
+  }
+  _bootstrap();
+}
+
+void _bootstrap() {
   FlutterError.onError = (details) {
     FlutterError.presentError(details);
     unawaited(_safeLog(source: 'flutter_error', error: details.exception));
+    if (_sentryEnabled) {
+      unawaited(
+        Sentry.captureException(details.exception, stackTrace: details.stack),
+      );
+    }
   };
   PlatformDispatcher.instance.onError = (error, stack) {
     unawaited(_safeLog(source: 'platform_dispatcher', error: error));
+    if (_sentryEnabled) {
+      unawaited(Sentry.captureException(error, stackTrace: stack));
+    }
     return true;
   };
 
@@ -64,6 +96,9 @@ Future<void> main() async {
         (error, stack) {
           startupStatus.markFailure('run_zoned_guarded', error);
           unawaited(_safeLog(source: 'run_zoned_guarded', error: error));
+          if (_sentryEnabled) {
+            unawaited(Sentry.captureException(error, stackTrace: stack));
+          }
         },
       ) ??
       Future<void>.value();

@@ -23,4 +23,11 @@ class OnboardingService {
     await prefs.setString(keyPrimaryWallet, primaryWallet);
     await prefs.setString(keyPrimaryCategory, primaryCategory);
   }
+
+  Future<void> reset() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(keyCompleted);
+    await prefs.remove(keyPrimaryWallet);
+    await prefs.remove(keyPrimaryCategory);
+  }
 }

@@ -446,6 +446,17 @@ class AppLocalizations {
       'save_failed': 'Gagal menyimpan',
       'budget_scope_required': 'Pilih dompet atau kategori untuk cakupan anggaran',
       'budget_limit_invalid': 'Limit anggaran tidak valid',
+      'delete_all_data': 'Hapus Semua Data',
+      'delete_all_data_desc':
+          'Hapus transaksi, utang, anggaran, dan profil dari perangkat ini',
+      'delete_all_data_warning':
+          'Tindakan ini permanen dan tidak bisa dibatalkan. Semua transaksi, tagihan, utang, anggaran, target tabungan, template, profil, dan backup lokal akan dihapus.',
+      'delete_all_data_keyword': 'HAPUS',
+      'delete_all_data_hint': 'Ketik HAPUS untuk konfirmasi',
+      'delete_all_data_done': 'Semua data telah dihapus',
+      'delete_all_data_failed': 'Gagal menghapus data',
+      'enter_current_pin': 'Masukkan PIN saat ini',
+      'current_pin_incorrect': 'PIN saat ini salah',
       },
     'en': {
       'profile': 'Profile',
@@ -865,6 +876,17 @@ class AppLocalizations {
       'save_failed': 'Failed to save',
       'budget_scope_required': 'Choose a wallet or category for the budget scope',
       'budget_limit_invalid': 'Budget limit is invalid',
+      'delete_all_data': 'Delete All Data',
+      'delete_all_data_desc':
+          'Remove transactions, debts, budgets, and profile from this device',
+      'delete_all_data_warning':
+          'This is permanent and cannot be undone. All transactions, bills, debts, budgets, savings goals, templates, profile, and local backups will be deleted.',
+      'delete_all_data_keyword': 'DELETE',
+      'delete_all_data_hint': 'Type DELETE to confirm',
+      'delete_all_data_done': 'All data has been deleted',
+      'delete_all_data_failed': 'Failed to delete data',
+      'enter_current_pin': 'Enter current PIN',
+      'current_pin_incorrect': 'Current PIN is incorrect',
     },
   };
 

@@ -35,14 +35,17 @@ class BiometricLockService {
       onTimeout: () => false,
     );
     final canUse = canCheck || isSupported;
-    if (!canUse) return true;
+    // Fail closed: if biometrics are enabled but unavailable, deny rather
+    // than silently granting access. The lock screen still offers the PIN
+    // fallback or closing the profile.
+    if (!canUse) return false;
 
     try {
       final available = await _auth.getAvailableBiometrics().timeout(
         _timeout,
         onTimeout: () => <BiometricType>[],
       );
-      if (available.isEmpty) return true;
+      if (available.isEmpty) return false;
 
       return await _auth
           .authenticate(

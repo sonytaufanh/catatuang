@@ -1,8 +1,11 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
-import 'package:isar/isar.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite_sqlcipher/sqflite.dart';
 
 import 'models/debt_record.dart';
 import 'models/recurring_bill_record.dart';
@@ -21,21 +24,255 @@ class SplitPart {
   final String note;
 }
 
+/// Local persistence backed by SQLite (SQLCipher, encrypted at rest).
+///
+/// Public API is intentionally stable so stores and screens do not need to
+/// know about the underlying database.
 class DatabaseService {
   DatabaseService._();
   static const int maxAmount = 1000000000;
   static const String _transferBackfillKey = 'transfer_group_backfill_v1';
+  static const String _dbKeyStorageKey = 'catatuang_db_encryption_key_v2';
+  static const int _schemaVersion = 1;
 
   static final DatabaseService instance = DatabaseService._();
   final Random _random = Random();
-  Isar? _isar;
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+
+  Database? _db;
+
+  Database get _database {
+    final db = _db;
+    if (db == null) {
+      throw StateError('Database belum diinisialisasi.');
+    }
+    return db;
+  }
+
+  final StreamController<List<TransactionRecord>> _transactionsController =
+      StreamController<List<TransactionRecord>>.broadcast();
+  final StreamController<List<RecurringBillRecord>> _recurringBillsController =
+      StreamController<List<RecurringBillRecord>>.broadcast();
+  final StreamController<List<DebtRecord>> _debtsController =
+      StreamController<List<DebtRecord>>.broadcast();
+
+  // ---------------------------------------------------------------------------
+  // Init
+  // ---------------------------------------------------------------------------
+
+  Future<void> init() async {
+    if (_db != null) return;
+    final dir = await getApplicationDocumentsDirectory();
+    final path = '${dir.path}/catatuang.db';
+    final password = await _resolveEncryptionKey();
+    _db = await openDatabase(
+      path,
+      password: password,
+      version: _schemaVersion,
+      onConfigure: _onConfigure,
+      onCreate: _onCreate,
+    );
+  }
+
+  /// Opens an unencrypted in-memory/file database for tests using a custom
+  /// factory (e.g. `databaseFactoryFfi`).
+  Future<void> initForTesting({
+    required DatabaseFactory factory,
+    String path = inMemoryDatabasePath,
+  }) async {
+    _db = await factory.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: _schemaVersion,
+        onConfigure: _onConfigure,
+        onCreate: _onCreate,
+        singleInstance: false,
+      ),
+    );
+  }
+
+  Future<void> _onConfigure(Database db) async {
+    await db.execute('PRAGMA foreign_keys = ON');
+  }
+
+  Future<void> _onCreate(Database db, int version) async {
+    await db.execute('''
+      CREATE TABLE transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        isExpense INTEGER NOT NULL,
+        amount INTEGER NOT NULL,
+        wallet TEXT NOT NULL,
+        category TEXT NOT NULL,
+        transactionDate INTEGER NOT NULL,
+        isCleared INTEGER NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        receiptPath TEXT NOT NULL DEFAULT '',
+        transferGroupId TEXT NOT NULL DEFAULT '',
+        splitGroupId TEXT NOT NULL DEFAULT '',
+        currency TEXT NOT NULL DEFAULT '',
+        createdAt INTEGER NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX idx_tx_date ON transactions(transactionDate DESC)',
+    );
+    await db.execute(
+      'CREATE INDEX idx_tx_transfer ON transactions(transferGroupId)',
+    );
+    await db.execute(
+      'CREATE INDEX idx_tx_split ON transactions(splitGroupId)',
+    );
+
+    await db.execute('''
+      CREATE TABLE recurring_bills (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        dueDay INTEGER NOT NULL,
+        createdAt INTEGER NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE debts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        isReceivable INTEGER NOT NULL,
+        principal INTEGER NOT NULL,
+        remaining INTEGER NOT NULL,
+        dueDate INTEGER,
+        note TEXT NOT NULL DEFAULT '',
+        interestRatePercent REAL NOT NULL DEFAULT 0,
+        isSettled INTEGER NOT NULL,
+        createdAt INTEGER NOT NULL
+      )
+    ''');
+  }
+
+  Future<String> _resolveEncryptionKey() async {
+    final stored = await _secureStorage.read(key: _dbKeyStorageKey);
+    if (stored != null && stored.isNotEmpty) return stored;
+    final key = base64Encode(
+      List<int>.generate(32, (_) => Random.secure().nextInt(256)),
+    );
+    await _secureStorage.write(key: _dbKeyStorageKey, value: key);
+    return key;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Mapping helpers
+  // ---------------------------------------------------------------------------
+
+  Map<String, Object?> _txToRow(TransactionRecord r, {bool includeId = false}) {
+    return <String, Object?>{
+      if (includeId) 'id': r.id,
+      'isExpense': r.isExpense ? 1 : 0,
+      'amount': r.amount,
+      'wallet': r.wallet,
+      'category': r.category,
+      'transactionDate': r.transactionDate.millisecondsSinceEpoch,
+      'isCleared': r.isCleared ? 1 : 0,
+      'note': r.note,
+      'receiptPath': r.receiptPath,
+      'transferGroupId': r.transferGroupId,
+      'splitGroupId': r.splitGroupId,
+      'currency': r.currency,
+      'createdAt': r.createdAt.millisecondsSinceEpoch,
+    };
+  }
+
+  TransactionRecord _txFromRow(Map<String, Object?> row) {
+    return TransactionRecord(
+      id: (row['id'] as num).toInt(),
+      isExpense: (row['isExpense'] as num).toInt() == 1,
+      amount: (row['amount'] as num).toInt(),
+      wallet: (row['wallet'] as String?) ?? '',
+      category: (row['category'] as String?) ?? '',
+      transactionDate: DateTime.fromMillisecondsSinceEpoch(
+        (row['transactionDate'] as num).toInt(),
+      ),
+      isCleared: (row['isCleared'] as num).toInt() == 1,
+      note: (row['note'] as String?) ?? '',
+      receiptPath: (row['receiptPath'] as String?) ?? '',
+      transferGroupId: (row['transferGroupId'] as String?) ?? '',
+      splitGroupId: (row['splitGroupId'] as String?) ?? '',
+      currency: (row['currency'] as String?) ?? '',
+      createdAt: DateTime.fromMillisecondsSinceEpoch(
+        (row['createdAt'] as num).toInt(),
+      ),
+    );
+  }
+
+  Map<String, Object?> _billToRow(
+    RecurringBillRecord r, {
+    bool includeId = false,
+  }) {
+    return <String, Object?>{
+      if (includeId) 'id': r.id,
+      'name': r.name,
+      'amount': r.amount,
+      'dueDay': r.dueDay,
+      'createdAt': r.createdAt.millisecondsSinceEpoch,
+    };
+  }
+
+  RecurringBillRecord _billFromRow(Map<String, Object?> row) {
+    return RecurringBillRecord(
+      id: (row['id'] as num).toInt(),
+      name: (row['name'] as String?) ?? '',
+      amount: (row['amount'] as num).toInt(),
+      dueDay: (row['dueDay'] as num).toInt(),
+      createdAt: DateTime.fromMillisecondsSinceEpoch(
+        (row['createdAt'] as num).toInt(),
+      ),
+    );
+  }
+
+  Map<String, Object?> _debtToRow(DebtRecord r, {bool includeId = false}) {
+    return <String, Object?>{
+      if (includeId) 'id': r.id,
+      'name': r.name,
+      'isReceivable': r.isReceivable ? 1 : 0,
+      'principal': r.principal,
+      'remaining': r.remaining,
+      'dueDate': r.dueDate?.millisecondsSinceEpoch,
+      'note': r.note,
+      'interestRatePercent': r.interestRatePercent,
+      'isSettled': r.isSettled ? 1 : 0,
+      'createdAt': r.createdAt.millisecondsSinceEpoch,
+    };
+  }
+
+  DebtRecord _debtFromRow(Map<String, Object?> row) {
+    final due = row['dueDate'];
+    return DebtRecord(
+      id: (row['id'] as num).toInt(),
+      name: (row['name'] as String?) ?? '',
+      isReceivable: (row['isReceivable'] as num).toInt() == 1,
+      principal: (row['principal'] as num).toInt(),
+      remaining: (row['remaining'] as num).toInt(),
+      dueDate: due == null
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch((due as num).toInt()),
+      note: (row['note'] as String?) ?? '',
+      interestRatePercent:
+          (row['interestRatePercent'] as num?)?.toDouble() ?? 0,
+      isSettled: (row['isSettled'] as num).toInt() == 1,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(
+        (row['createdAt'] as num).toInt(),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Transfer/split helpers
+  // ---------------------------------------------------------------------------
 
   static bool isTransferCategory(String category) {
     final normalized = category.trim().toLowerCase();
     return normalized == 'transfer_out' || normalized == 'transfer_in';
   }
 
-  /// Returns true when [candidate] is the opposite leg of the transfer [tx].
   static bool isTransferCounterpart(
     TransactionRecord tx,
     TransactionRecord candidate,
@@ -49,7 +286,6 @@ class DatabaseService {
     return _legacyTransferMatch(tx, candidate);
   }
 
-  /// Heuristic used for transfers recorded before [transferGroupId] existed.
   static bool _legacyTransferMatch(
     TransactionRecord tx,
     TransactionRecord candidate,
@@ -65,6 +301,11 @@ class DatabaseService {
     return candidate.createdAt.difference(tx.createdAt).inSeconds.abs() <= 1;
   }
 
+  static bool isSameSplitGroup(TransactionRecord a, TransactionRecord b) {
+    final group = a.splitGroupId.trim();
+    return group.isNotEmpty && group == b.splitGroupId.trim();
+  }
+
   String _newTransferGroupId() {
     final now = DateTime.now().microsecondsSinceEpoch;
     final rand = _random.nextInt(0x7fffffff).toRadixString(16);
@@ -75,15 +316,6 @@ class DatabaseService {
     final now = DateTime.now().microsecondsSinceEpoch;
     final rand = _random.nextInt(0x7fffffff).toRadixString(16);
     return 'spl_${now}_$rand';
-  }
-
-  /// True when both records belong to the same split transaction.
-  static bool isSameSplitGroup(
-    TransactionRecord a,
-    TransactionRecord b,
-  ) {
-    final group = a.splitGroupId.trim();
-    return group.isNotEmpty && group == b.splitGroupId.trim();
   }
 
   Future<String> _resolveCurrency(String provided) async {
@@ -97,26 +329,50 @@ class DatabaseService {
     }
   }
 
-  Isar get isar {
-    final db = _isar;
-    if (db == null) {
-      throw StateError('Database belum diinisialisasi.');
-    }
-    return db;
+  Future<void> _emitTransactions() async {
+    if (!_transactionsController.hasListener) return;
+    _transactionsController.add(await getAllTransactions());
   }
 
-  Future<void> init() async {
-    if (_isar != null) return;
-    final dir = await getApplicationDocumentsDirectory();
-    _isar = await Isar.open(
-      [RecurringBillRecordSchema, TransactionRecordSchema, DebtRecordSchema],
-      directory: dir.path,
-      name: 'catatuang_db',
-    );
+  Future<void> _emitRecurringBills() async {
+    if (!_recurringBillsController.hasListener) return;
+    _recurringBillsController.add(await getAllRecurringBills());
   }
+
+  Future<void> _emitDebts() async {
+    if (!_debtsController.hasListener) return;
+    _debtsController.add(await getAllDebts());
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reactive streams
+  // ---------------------------------------------------------------------------
+
+  Stream<List<TransactionRecord>> watchTransactions() async* {
+    yield await getAllTransactions();
+    yield* _transactionsController.stream;
+  }
+
+  Stream<List<RecurringBillRecord>> watchRecurringBills() async* {
+    yield await getAllRecurringBills();
+    yield* _recurringBillsController.stream;
+  }
+
+  Stream<List<DebtRecord>> watchDebts() async* {
+    yield await getAllDebts();
+    yield* _debtsController.stream;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Recurring bills
+  // ---------------------------------------------------------------------------
 
   Future<List<RecurringBillRecord>> getAllRecurringBills() async {
-    return isar.recurringBillRecords.where().sortByDueDay().findAll();
+    final rows = await _database.query(
+      'recurring_bills',
+      orderBy: 'dueDay ASC, id ASC',
+    );
+    return rows.map(_billFromRow).toList(growable: false);
   }
 
   Future<void> addRecurringBill({
@@ -125,14 +381,14 @@ class DatabaseService {
     required int dueDay,
   }) async {
     _validateRecurringBillInput(name: name, amount: amount, dueDay: dueDay);
-    final record = RecurringBillRecord()
-      ..name = name.trim()
-      ..amount = amount
-      ..dueDay = dueDay.clamp(1, 31)
-      ..createdAt = DateTime.now();
-    await isar.writeTxn(() async {
-      await isar.recurringBillRecords.put(record);
-    });
+    final record = RecurringBillRecord(
+      name: name.trim(),
+      amount: amount,
+      dueDay: dueDay.clamp(1, 31),
+      createdAt: DateTime.now(),
+    );
+    await _database.insert('recurring_bills', _billToRow(record));
+    await _emitRecurringBills();
   }
 
   Future<void> updateRecurringBill({
@@ -142,24 +398,30 @@ class DatabaseService {
     required int dueDay,
   }) async {
     _validateRecurringBillInput(name: name, amount: amount, dueDay: dueDay);
-    final existing = await isar.recurringBillRecords.get(id);
-    if (existing == null) {
+    final count = await _database.update(
+      'recurring_bills',
+      <String, Object?>{
+        'name': name.trim(),
+        'amount': amount,
+        'dueDay': dueDay.clamp(1, 31),
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    if (count == 0) {
       throw StateError('Tagihan rutin tidak ditemukan.');
     }
-    existing
-      ..name = name.trim()
-      ..amount = amount
-      ..dueDay = dueDay.clamp(1, 31);
-    await isar.writeTxn(() async {
-      await isar.recurringBillRecords.put(existing);
-    });
+    await _emitRecurringBills();
   }
 
   Future<void> deleteRecurringBill(int id) async {
-    await isar.writeTxn(() async {
-      await isar.recurringBillRecords.delete(id);
-    });
+    await _database.delete('recurring_bills', where: 'id = ?', whereArgs: [id]);
+    await _emitRecurringBills();
   }
+
+  // ---------------------------------------------------------------------------
+  // Transactions
+  // ---------------------------------------------------------------------------
 
   Future<void> addTransaction({
     required bool isExpense,
@@ -178,40 +440,29 @@ class DatabaseService {
       category: category,
       transactionDate: transactionDate,
     );
-    final record = TransactionRecord()
-      ..isExpense = isExpense
-      ..amount = amount
-      ..wallet = wallet.trim()
-      ..category = category.trim()
-      ..transactionDate = transactionDate
-      ..isCleared = isCleared
-      ..note = _sanitizeNote(note)
-      ..receiptPath = _sanitizePath(receiptPath)
-      ..currency = await _resolveCurrency(currency)
-      ..createdAt = DateTime.now();
-    await isar.writeTxn(() async {
-      await isar.transactionRecords.put(record);
-    });
+    final record = TransactionRecord(
+      isExpense: isExpense,
+      amount: amount,
+      wallet: wallet.trim(),
+      category: category.trim(),
+      transactionDate: transactionDate,
+      isCleared: isCleared,
+      note: _sanitizeNote(note),
+      receiptPath: _sanitizePath(receiptPath),
+      currency: await _resolveCurrency(currency),
+      createdAt: DateTime.now(),
+    );
+    final id = await _database.insert('transactions', _txToRow(record));
+    record.id = id;
+    await _emitTransactions();
   }
 
   Future<List<TransactionRecord>> getAllTransactions() async {
-    return isar.transactionRecords.where().sortByTransactionDateDesc().findAll();
-  }
-
-  /// Reactive stream of all transactions, sorted newest first.
-  Stream<List<TransactionRecord>> watchTransactions() {
-    return isar.transactionRecords
-        .where()
-        .sortByTransactionDateDesc()
-        .watch(fireImmediately: true);
-  }
-
-  /// Reactive stream of all recurring bills, sorted by due day.
-  Stream<List<RecurringBillRecord>> watchRecurringBills() {
-    return isar.recurringBillRecords
-        .where()
-        .sortByDueDay()
-        .watch(fireImmediately: true);
+    final rows = await _database.query(
+      'transactions',
+      orderBy: 'transactionDate DESC, id DESC',
+    );
+    return rows.map(_txFromRow).toList(growable: false);
   }
 
   Future<void> updateTransaction({
@@ -232,27 +483,39 @@ class DatabaseService {
       category: category,
       transactionDate: transactionDate,
     );
-    final existing = await isar.transactionRecords.get(id);
-    if (existing == null) {
+    final rows = await _database.query(
+      'transactions',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
       throw StateError('Transaksi tidak ditemukan.');
     }
-    existing
-      ..isExpense = isExpense
-      ..amount = amount
-      ..wallet = wallet.trim()
-      ..category = category.trim()
-      ..transactionDate = transactionDate
-      ..isCleared = isCleared
-      ..note = _sanitizeNote(note)
-      ..receiptPath = _sanitizePath(receiptPath);
+    final existing = _txFromRow(rows.first);
+    var resolvedCurrency = existing.currency;
     if (currency != null && currency.trim().isNotEmpty) {
-      existing.currency = await _resolveCurrency(currency);
-    } else if (existing.currency.trim().isEmpty) {
-      existing.currency = await _resolveCurrency('');
+      resolvedCurrency = await _resolveCurrency(currency);
+    } else if (resolvedCurrency.trim().isEmpty) {
+      resolvedCurrency = await _resolveCurrency('');
     }
-    await isar.writeTxn(() async {
-      await isar.transactionRecords.put(existing);
-    });
+    await _database.update(
+      'transactions',
+      <String, Object?>{
+        'isExpense': isExpense ? 1 : 0,
+        'amount': amount,
+        'wallet': wallet.trim(),
+        'category': category.trim(),
+        'transactionDate': transactionDate.millisecondsSinceEpoch,
+        'isCleared': isCleared ? 1 : 0,
+        'note': _sanitizeNote(note),
+        'receiptPath': _sanitizePath(receiptPath),
+        'currency': resolvedCurrency,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    await _emitTransactions();
   }
 
   Future<void> addTransfer({
@@ -265,7 +528,7 @@ class DatabaseService {
     if (sourceWallet.trim().isEmpty || destWallet.trim().isEmpty) {
       throw ArgumentError('Dompet asal dan tujuan tidak boleh kosong.');
     }
-    if (sourceWallet.trim().toLowerCase == destWallet.trim().toLowerCase) {
+    if (sourceWallet.trim().toLowerCase() == destWallet.trim().toLowerCase()) {
       throw ArgumentError('Dompet asal dan tujuan tidak boleh sama.');
     }
     if (amount <= 0) {
@@ -277,64 +540,37 @@ class DatabaseService {
     final now = DateTime.now();
     final groupId = _newTransferGroupId();
     final currency = await _resolveCurrency('');
-    final outRecord = TransactionRecord()
-      ..isExpense = true
-      ..amount = amount
-      ..wallet = sourceWallet.trim()
-      ..category = 'transfer_out'
-      ..transactionDate = transactionDate
-      ..isCleared = true
-      ..note = _sanitizeNote(note)
-      ..receiptPath = ''
-      ..transferGroupId = groupId
-      ..currency = currency
-      ..createdAt = now;
-    final inRecord = TransactionRecord()
-      ..isExpense = false
-      ..amount = amount
-      ..wallet = destWallet.trim()
-      ..category = 'transfer_in'
-      ..transactionDate = transactionDate
-      ..isCleared = true
-      ..note = _sanitizeNote(note)
-      ..receiptPath = ''
-      ..transferGroupId = groupId
-      ..currency = currency
-      ..createdAt = now;
-    await isar.writeTxn(() async {
-      await isar.transactionRecords.putAll([outRecord, inRecord]);
+    final outRecord = TransactionRecord(
+      isExpense: true,
+      amount: amount,
+      wallet: sourceWallet.trim(),
+      category: 'transfer_out',
+      transactionDate: transactionDate,
+      isCleared: true,
+      note: _sanitizeNote(note),
+      transferGroupId: groupId,
+      currency: currency,
+      createdAt: now,
+    );
+    final inRecord = TransactionRecord(
+      isExpense: false,
+      amount: amount,
+      wallet: destWallet.trim(),
+      category: 'transfer_in',
+      transactionDate: transactionDate,
+      isCleared: true,
+      note: _sanitizeNote(note),
+      transferGroupId: groupId,
+      currency: currency,
+      createdAt: now,
+    );
+    await _database.transaction((txn) async {
+      await txn.insert('transactions', _txToRow(outRecord));
+      await txn.insert('transactions', _txToRow(inRecord));
     });
+    await _emitTransactions();
   }
 
-  Future<void> deleteTransaction(int id) async {
-    await isar.writeTxn(() async {
-      await isar.transactionRecords.delete(id);
-    });
-  }
-
-  /// Deletes a transaction and, when it is a transfer leg, its counterpart
-  /// leg as well so that transfers never leave an orphaned half.
-  Future<void> deleteTransactionWithPair(TransactionRecord tx) async {
-    if (!isTransferCategory(tx.category)) {
-      await deleteTransaction(tx.id);
-      return;
-    }
-    final all = await getAllTransactions();
-    final pair = <TransactionRecord>[];
-    for (final candidate in all) {
-      if (isTransferCounterpart(tx, candidate)) {
-        pair.add(candidate);
-      }
-    }
-    await isar.writeTxn(() async {
-      await isar.transactionRecords.delete(tx.id);
-      for (final candidate in pair) {
-        await isar.transactionRecords.delete(candidate.id);
-      }
-    });
-  }
-
-  /// Creates a split transaction: one row per category sharing a split group.
   Future<void> addSplitTransaction({
     required bool isExpense,
     required String wallet,
@@ -367,27 +603,49 @@ class DatabaseService {
     final resolvedCurrency = await _resolveCurrency(currency);
     final records = validParts
         .map(
-          (part) => TransactionRecord()
-            ..isExpense = isExpense
-            ..amount = part.amount
-            ..wallet = wallet.trim()
-            ..category = part.category.trim()
-            ..transactionDate = transactionDate
-            ..isCleared = true
-            ..note = _sanitizeNote(part.note)
-            ..receiptPath = ''
-            ..splitGroupId = groupId
-            ..currency = resolvedCurrency
-            ..createdAt = now,
+          (part) => TransactionRecord(
+            isExpense: isExpense,
+            amount: part.amount,
+            wallet: wallet.trim(),
+            category: part.category.trim(),
+            transactionDate: transactionDate,
+            isCleared: true,
+            note: _sanitizeNote(part.note),
+            splitGroupId: groupId,
+            currency: resolvedCurrency,
+            createdAt: now,
+          ),
         )
         .toList(growable: false);
 
-    await isar.writeTxn(() async {
-      await isar.transactionRecords.putAll(records);
+    await _database.transaction((txn) async {
+      for (final record in records) {
+        await txn.insert('transactions', _txToRow(record));
+      }
     });
+    await _emitTransactions();
   }
 
-  /// Deletes a transaction along with its transfer pair or split siblings.
+  Future<void> deleteTransaction(int id) async {
+    await _database.delete('transactions', where: 'id = ?', whereArgs: [id]);
+    await _emitTransactions();
+  }
+
+  Future<void> deleteTransactionWithPair(TransactionRecord tx) async {
+    if (!isTransferCategory(tx.category)) {
+      await deleteTransaction(tx.id);
+      return;
+    }
+    final all = await getAllTransactions();
+    final ids = <int>{tx.id};
+    for (final candidate in all) {
+      if (isTransferCounterpart(tx, candidate)) {
+        ids.add(candidate.id);
+      }
+    }
+    await _deleteTransactionIds(ids);
+  }
+
   Future<void> deleteTransactionDeep(TransactionRecord tx) async {
     final splitGroup = tx.splitGroupId.trim();
     if (splitGroup.isNotEmpty) {
@@ -395,19 +653,25 @@ class DatabaseService {
       final ids = all
           .where((e) => e.splitGroupId.trim() == splitGroup)
           .map((e) => e.id)
-          .toList(growable: false);
-      await isar.writeTxn(() async {
-        for (final id in ids) {
-          await isar.transactionRecords.delete(id);
-        }
-      });
+          .toSet();
+      await _deleteTransactionIds(ids);
       return;
     }
     await deleteTransactionWithPair(tx);
   }
 
-  /// Assigns explicit group ids to legacy transfer legs that predate the
-  /// [TransactionRecord.transferGroupId] field. Runs once per install.
+  Future<void> _deleteTransactionIds(Set<int> ids) async {
+    if (ids.isEmpty) return;
+    final placeholders = List.filled(ids.length, '?').join(',');
+    await _database.delete(
+      'transactions',
+      where: 'id IN ($placeholders)',
+      whereArgs: ids.toList(growable: false),
+    );
+    await _emitTransactions();
+  }
+
+  /// Assigns explicit group ids to legacy transfer legs. Runs once per install.
   Future<void> backfillTransferGroupsIfNeeded() async {
     final prefs = await SharedPreferences.getInstance();
     if (prefs.getBool(_transferBackfillKey) ?? false) return;
@@ -439,32 +703,35 @@ class DatabaseService {
         }
       }
       final groupId = _newTransferGroupId();
-      for (final leg in legs) {
-        leg.transferGroupId = groupId;
-        assigned.add(leg.id);
-      }
-      await isar.writeTxn(() async {
-        await isar.transactionRecords.putAll(legs);
+      await _database.transaction((txn) async {
+        for (final leg in legs) {
+          await txn.update(
+            'transactions',
+            <String, Object?>{'transferGroupId': groupId},
+            where: 'id = ?',
+            whereArgs: [leg.id],
+          );
+          assigned.add(leg.id);
+        }
       });
       groups += 1;
+    }
+    if (groups > 0) {
+      await _emitTransactions();
     }
     return groups;
   }
 
-  Future<List<DebtRecord>> getAllDebts() async {
-    return isar.debtRecords
-        .where()
-        .sortByIsSettled()
-        .thenByCreatedAtDesc()
-        .findAll();
-  }
+  // ---------------------------------------------------------------------------
+  // Debts
+  // ---------------------------------------------------------------------------
 
-  Stream<List<DebtRecord>> watchDebts() {
-    return isar.debtRecords
-        .where()
-        .sortByIsSettled()
-        .thenByCreatedAtDesc()
-        .watch(fireImmediately: true);
+  Future<List<DebtRecord>> getAllDebts() async {
+    final rows = await _database.query(
+      'debts',
+      orderBy: 'isSettled ASC, createdAt DESC, id DESC',
+    );
+    return rows.map(_debtFromRow).toList(growable: false);
   }
 
   Future<void> addDebt({
@@ -476,22 +743,19 @@ class DatabaseService {
     double interestRatePercent = 0,
   }) async {
     _validateDebtInput(name: name, amount: amount);
-    final now = DateTime.now();
-    final record = DebtRecord()
-      ..name = name.trim()
-      ..isReceivable = isReceivable
-      ..principal = amount
-      ..remaining = amount
-      ..dueDate = dueDate
-      ..note = _sanitizeNote(note)
-      ..interestRatePercent = interestRatePercent < 0
-          ? 0
-          : interestRatePercent
-      ..isSettled = false
-      ..createdAt = now;
-    await isar.writeTxn(() async {
-      await isar.debtRecords.put(record);
-    });
+    final record = DebtRecord(
+      name: name.trim(),
+      isReceivable: isReceivable,
+      principal: amount,
+      remaining: amount,
+      dueDate: dueDate,
+      note: _sanitizeNote(note),
+      interestRatePercent: interestRatePercent < 0 ? 0 : interestRatePercent,
+      isSettled: false,
+      createdAt: DateTime.now(),
+    );
+    await _database.insert('debts', _debtToRow(record));
+    await _emitDebts();
   }
 
   Future<void> updateDebt({
@@ -505,35 +769,35 @@ class DatabaseService {
     double interestRatePercent = 0,
   }) async {
     _validateDebtInput(name: name, amount: amount);
-    final existing = await isar.debtRecords.get(id);
-    if (existing == null) {
+    final safeRemaining = remaining.clamp(0, amount);
+    final count = await _database.update(
+      'debts',
+      <String, Object?>{
+        'name': name.trim(),
+        'isReceivable': isReceivable ? 1 : 0,
+        'principal': amount,
+        'remaining': safeRemaining,
+        'dueDate': dueDate?.millisecondsSinceEpoch,
+        'note': _sanitizeNote(note),
+        'interestRatePercent': interestRatePercent < 0
+            ? 0
+            : interestRatePercent,
+        'isSettled': safeRemaining <= 0 ? 1 : 0,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    if (count == 0) {
       throw StateError('Data utang/piutang tidak ditemukan.');
     }
-    final safeRemaining = remaining.clamp(0, amount);
-    existing
-      ..name = name.trim()
-      ..isReceivable = isReceivable
-      ..principal = amount
-      ..remaining = safeRemaining
-      ..dueDate = dueDate
-      ..note = _sanitizeNote(note)
-      ..interestRatePercent = interestRatePercent < 0
-          ? 0
-          : interestRatePercent
-      ..isSettled = safeRemaining <= 0;
-    await isar.writeTxn(() async {
-      await isar.debtRecords.put(existing);
-    });
+    await _emitDebts();
   }
 
   Future<void> deleteDebt(int id) async {
-    await isar.writeTxn(() async {
-      await isar.debtRecords.delete(id);
-    });
+    await _database.delete('debts', where: 'id = ?', whereArgs: [id]);
+    await _emitDebts();
   }
 
-  /// Applies a payment toward a debt and records the matching transaction in
-  /// the same atomic write.
   Future<void> applyDebtPayment({
     required int debtId,
     required int amount,
@@ -546,16 +810,29 @@ class DatabaseService {
     if (amount <= 0 || amount > maxAmount) {
       throw ArgumentError('Nominal pembayaran tidak valid.');
     }
-    final debt = await isar.debtRecords.get(debtId);
-    if (debt == null) {
+    final rows = await _database.query(
+      'debts',
+      where: 'id = ?',
+      whereArgs: [debtId],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
       throw StateError('Data utang/piutang tidak ditemukan.');
     }
+    final debt = _debtFromRow(rows.first);
     final applied = amount.clamp(0, debt.remaining);
     final currency = await _resolveCurrency('');
-    await isar.writeTxn(() async {
-      debt.remaining = (debt.remaining - applied).clamp(0, debt.principal);
-      debt.isSettled = debt.remaining <= 0;
-      await isar.debtRecords.put(debt);
+    await _database.transaction((txn) async {
+      final nextRemaining = (debt.remaining - applied).clamp(0, debt.principal);
+      await txn.update(
+        'debts',
+        <String, Object?>{
+          'remaining': nextRemaining,
+          'isSettled': nextRemaining <= 0 ? 1 : 0,
+        },
+        where: 'id = ?',
+        whereArgs: [debt.id],
+      );
       if (createTransaction && applied > 0) {
         _validateTransactionInput(
           amount: applied,
@@ -565,33 +842,40 @@ class DatabaseService {
         );
         final txNote = note.trim().isEmpty
             ? '${debt.isReceivable ? 'Piutang' : 'Utang'}: ${debt.name}'
-            : _sanitizeNote(note);
-        final record = TransactionRecord()
-          ..isExpense = !debt.isReceivable
-          ..amount = applied
-          ..wallet = wallet.trim()
-          ..category = category.trim()
-          ..transactionDate = transactionDate
-          ..isCleared = true
-          ..note = _sanitizeNote(txNote)
-          ..receiptPath = ''
-          ..currency = currency
-          ..createdAt = DateTime.now();
-        await isar.transactionRecords.put(record);
+            : note;
+        final record = TransactionRecord(
+          isExpense: !debt.isReceivable,
+          amount: applied,
+          wallet: wallet.trim(),
+          category: category.trim(),
+          transactionDate: transactionDate,
+          isCleared: true,
+          note: _sanitizeNote(txNote),
+          currency: currency,
+          createdAt: DateTime.now(),
+        );
+        await txn.insert('transactions', _txToRow(record));
       }
     });
+    await _emitDebts();
+    if (createTransaction && applied > 0) {
+      await _emitTransactions();
+    }
   }
 
-  void _validateDebtInput({required String name, required int amount}) {
-    if (name.trim().isEmpty) {
-      throw ArgumentError('Nama pihak tidak boleh kosong.');
-    }
-    if (amount <= 0) {
-      throw ArgumentError('Nominal harus lebih dari 0.');
-    }
-    if (amount > maxAmount) {
-      throw ArgumentError('Nominal terlalu besar.');
-    }
+  // ---------------------------------------------------------------------------
+  // Backup payload
+  // ---------------------------------------------------------------------------
+
+  Future<void> clearAllData() async {
+    await _database.transaction((txn) async {
+      await txn.delete('transactions');
+      await txn.delete('recurring_bills');
+      await txn.delete('debts');
+    });
+    await _emitTransactions();
+    await _emitRecurringBills();
+    await _emitDebts();
   }
 
   Future<Map<String, dynamic>> exportBackupPayload() async {
@@ -653,68 +937,80 @@ class DatabaseService {
     final debtsRaw = (payload['debts'] as List<dynamic>? ?? const []);
 
     final transactions = trxRaw.whereType<Map>().map((item) {
-      final record = TransactionRecord()
-        ..isExpense = (item['isExpense'] as bool?) ?? true
-        ..amount = (item['amount'] as num?)?.toInt() ?? 0
-        ..wallet = (item['wallet'] as String?) ?? 'Cash'
-        ..category = (item['category'] as String?) ?? 'Others'
-        ..transactionDate =
+      return TransactionRecord(
+        isExpense: (item['isExpense'] as bool?) ?? true,
+        amount: (item['amount'] as num?)?.toInt() ?? 0,
+        wallet: (item['wallet'] as String?) ?? 'Cash',
+        category: (item['category'] as String?) ?? 'Others',
+        transactionDate:
             DateTime.tryParse((item['transactionDate'] as String?) ?? '') ??
-                DateTime.now()
-        ..isCleared = (item['isCleared'] as bool?) ?? false
-        ..note = (item['note'] as String?) ?? ''
-        ..receiptPath = (item['receiptPath'] as String?) ?? ''
-        ..transferGroupId = (item['transferGroupId'] as String?) ?? ''
-        ..splitGroupId = (item['splitGroupId'] as String?) ?? ''
-        ..currency = (item['currency'] as String?) ?? ''
-        ..createdAt = DateTime.tryParse((item['createdAt'] as String?) ?? '') ??
-            DateTime.now();
-      return record;
+            DateTime.now(),
+        isCleared: (item['isCleared'] as bool?) ?? false,
+        note: (item['note'] as String?) ?? '',
+        receiptPath: (item['receiptPath'] as String?) ?? '',
+        transferGroupId: (item['transferGroupId'] as String?) ?? '',
+        splitGroupId: (item['splitGroupId'] as String?) ?? '',
+        currency: (item['currency'] as String?) ?? '',
+        createdAt:
+            DateTime.tryParse((item['createdAt'] as String?) ?? '') ??
+            DateTime.now(),
+      );
     }).toList(growable: false);
 
     final recurringBills = billsRaw.whereType<Map>().map((item) {
-      final record = RecurringBillRecord()
-        ..name = (item['name'] as String?) ?? 'Tagihan'
-        ..amount = (item['amount'] as num?)?.toInt() ?? 0
-        ..dueDay = ((item['dueDay'] as num?)?.toInt() ?? 1).clamp(1, 31)
-        ..createdAt = DateTime.tryParse((item['createdAt'] as String?) ?? '') ??
-            DateTime.now();
-      return record;
+      return RecurringBillRecord(
+        name: (item['name'] as String?) ?? 'Tagihan',
+        amount: (item['amount'] as num?)?.toInt() ?? 0,
+        dueDay: ((item['dueDay'] as num?)?.toInt() ?? 1).clamp(1, 31),
+        createdAt:
+            DateTime.tryParse((item['createdAt'] as String?) ?? '') ??
+            DateTime.now(),
+      );
     }).toList(growable: false);
 
     final debts = debtsRaw.whereType<Map>().map((item) {
       final principal = (item['principal'] as num?)?.toInt() ?? 0;
-      final record = DebtRecord()
-        ..name = (item['name'] as String?) ?? 'Utang'
-        ..isReceivable = (item['isReceivable'] as bool?) ?? false
-        ..principal = principal
-        ..remaining = ((item['remaining'] as num?)?.toInt() ?? principal)
-            .clamp(0, principal)
-        ..dueDate = DateTime.tryParse((item['dueDate'] as String?) ?? '')
-        ..note = (item['note'] as String?) ?? ''
-        ..interestRatePercent =
-            (item['interestRatePercent'] as num?)?.toDouble() ?? 0
-        ..isSettled = (item['isSettled'] as bool?) ?? false
-        ..createdAt = DateTime.tryParse((item['createdAt'] as String?) ?? '') ??
-            DateTime.now();
-      return record;
+      return DebtRecord(
+        name: (item['name'] as String?) ?? 'Utang',
+        isReceivable: (item['isReceivable'] as bool?) ?? false,
+        principal: principal,
+        remaining: ((item['remaining'] as num?)?.toInt() ?? principal).clamp(
+          0,
+          principal,
+        ),
+        dueDate: DateTime.tryParse((item['dueDate'] as String?) ?? ''),
+        note: (item['note'] as String?) ?? '',
+        interestRatePercent:
+            (item['interestRatePercent'] as num?)?.toDouble() ?? 0,
+        isSettled: (item['isSettled'] as bool?) ?? false,
+        createdAt:
+            DateTime.tryParse((item['createdAt'] as String?) ?? '') ??
+            DateTime.now(),
+      );
     }).toList(growable: false);
 
-    await isar.writeTxn(() async {
-      await isar.transactionRecords.clear();
-      await isar.recurringBillRecords.clear();
-      await isar.debtRecords.clear();
-      if (transactions.isNotEmpty) {
-        await isar.transactionRecords.putAll(transactions);
+    await _database.transaction((txn) async {
+      await txn.delete('transactions');
+      await txn.delete('recurring_bills');
+      await txn.delete('debts');
+      for (final record in transactions) {
+        await txn.insert('transactions', _txToRow(record));
       }
-      if (recurringBills.isNotEmpty) {
-        await isar.recurringBillRecords.putAll(recurringBills);
+      for (final record in recurringBills) {
+        await txn.insert('recurring_bills', _billToRow(record));
       }
-      if (debts.isNotEmpty) {
-        await isar.debtRecords.putAll(debts);
+      for (final record in debts) {
+        await txn.insert('debts', _debtToRow(record));
       }
     });
+    await _emitTransactions();
+    await _emitRecurringBills();
+    await _emitDebts();
   }
+
+  // ---------------------------------------------------------------------------
+  // Aggregation
+  // ---------------------------------------------------------------------------
 
   Future<int> getMonthlyExpenseTotal(DateTime date) async {
     return getCycleExpenseTotal(date, 1);
@@ -722,7 +1018,11 @@ class DatabaseService {
 
   Future<int> getCycleExpenseTotal(DateTime date, int cycleStartDay) async {
     final normalizedDay = cycleStartDay.clamp(1, 31);
-    final currentMonthStartDay = _safeDayInMonth(date.year, date.month, normalizedDay);
+    final currentMonthStartDay = _safeDayInMonth(
+      date.year,
+      date.month,
+      normalizedDay,
+    );
     late DateTime start;
     late DateTime end;
     if (date.day >= currentMonthStartDay) {
@@ -744,24 +1044,28 @@ class DatabaseService {
       start = DateTime(prevMonth.year, prevMonth.month, prevStartDay);
       end = DateTime(date.year, date.month, currentMonthStartDay);
     }
-    final records = await isar.transactionRecords
-        .filter()
-        .isExpenseEqualTo(true)
-        .transactionDateGreaterThan(start, include: true)
-        .transactionDateLessThan(end, include: false)
-        .findAll();
-    var total = 0;
-    for (final item in records) {
-      if (isTransferCategory(item.category)) continue;
-      total += item.amount;
-    }
-    return total;
+    final rows = await _database.rawQuery(
+      '''
+      SELECT COALESCE(SUM(amount), 0) AS total
+      FROM transactions
+      WHERE isExpense = 1
+        AND category NOT IN ('transfer_out', 'transfer_in')
+        AND transactionDate >= ?
+        AND transactionDate < ?
+      ''',
+      [start.millisecondsSinceEpoch, end.millisecondsSinceEpoch],
+    );
+    return (rows.first['total'] as num?)?.toInt() ?? 0;
   }
 
   int _safeDayInMonth(int year, int month, int requestedDay) {
     final lastDay = DateTime(year, month + 1, 0).day;
     return requestedDay.clamp(1, lastDay);
   }
+
+  // ---------------------------------------------------------------------------
+  // Validation & sanitization
+  // ---------------------------------------------------------------------------
 
   void _validateTransactionInput({
     required int amount,
@@ -802,6 +1106,18 @@ class DatabaseService {
     }
     if (dueDay < 1 || dueDay > 31) {
       throw ArgumentError('Tanggal jatuh tempo harus 1-31.');
+    }
+  }
+
+  void _validateDebtInput({required String name, required int amount}) {
+    if (name.trim().isEmpty) {
+      throw ArgumentError('Nama pihak tidak boleh kosong.');
+    }
+    if (amount <= 0) {
+      throw ArgumentError('Nominal harus lebih dari 0.');
+    }
+    if (amount > maxAmount) {
+      throw ArgumentError('Nominal terlalu besar.');
     }
   }
 

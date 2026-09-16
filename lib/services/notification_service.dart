@@ -41,6 +41,17 @@ class NotificationService {
     budgetSettingsVersion.value++;
   }
 
+  /// Removes persisted budget/notification budget settings.
+  Future<void> clearBudgetSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(keyBudgetLimit);
+    await prefs.remove(keyBudgetThreshold);
+    await prefs.remove(keyBudgetScopeType);
+    await prefs.remove(keyBudgetScopeValue);
+    await prefs.remove(keyBudgetPeriodDays);
+    notifyBudgetSettingsChanged();
+  }
+
   Future<void> init({bool requestPermission = false}) async {
     await _ensureInitialized(requestPermission: requestPermission);
   }

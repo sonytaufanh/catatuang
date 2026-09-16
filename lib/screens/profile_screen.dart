@@ -14,6 +14,7 @@ import '../services/auth_service.dart';
 import '../services/app_passcode_service.dart';
 import '../services/backup_service.dart';
 import '../services/biometric_lock_service.dart';
+import '../services/data_reset_service.dart';
 import '../services/error_log_service.dart';
 import '../services/export_report_service.dart';
 import '../services/master_data_service.dart';
@@ -2393,6 +2394,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   compact: true,
                   onTap: _showBackupRestoreSheet,
                 ),
+                const ProfileDivider(),
+                ProfileActionTile(
+                  icon: Icons.delete_forever_rounded,
+                  color: AppUiTokens.dangerDeep,
+                  title: t.t('delete_all_data'),
+                  subtitle: t.t('delete_all_data_desc'),
+                  compact: true,
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await _confirmDeleteAllData();
+                  },
+                ),
               ],
             );
           },
@@ -2468,6 +2481,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                     );
                     if (confirmed != true) return;
+                    if (!await _promptCurrentPin()) return;
                     await AppPasscodeService.instance.disablePasscode();
                     if (!mounted) return;
                     _showAction(t.t('pin_removed'));
@@ -2481,8 +2495,49 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  Future<bool> _promptCurrentPin() async {
+    if (!await AppPasscodeService.instance.hasPasscode()) return true;
+    if (!mounted) return false;
+    final t = AppLocalizations.of(context);
+    final controller = TextEditingController();
+    final pin = await _showPolishedDialog<String>(
+      title: t.t('enter_current_pin'),
+      child: TextField(
+        controller: controller,
+        obscureText: true,
+        maxLength: 6,
+        keyboardType: TextInputType.number,
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        decoration: _sheetFieldDecoration(
+          label: t.t('security_pin'),
+          icon: Icons.pin_rounded,
+        ),
+      ),
+      actions: [
+        OutlinedButton(
+          onPressed: () => Navigator.pop(context, ''),
+          child: Text(t.t('cancel')),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, controller.text),
+          child: Text(t.t('save')),
+        ),
+      ],
+    );
+    if (pin == null) return false;
+    final ok = await AppPasscodeService.instance.verifyPasscode(pin);
+    if (!mounted) return false;
+    if (!ok) {
+      _showAction(t.t('current_pin_incorrect'));
+      return false;
+    }
+    return true;
+  }
+
   Future<void> _showSetPasscodeDialog() async {
     final t = AppLocalizations.of(context);
+    if (!await _promptCurrentPin()) return;
+    if (!mounted) return;
     final pinController = TextEditingController();
     final confirmController = TextEditingController();
     final save = await _showPolishedDialog<bool>(
@@ -3108,6 +3163,95 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (mounted) {
         _showAction('Operasi backup gagal: $e');
       }
+    } finally {
+      if (mounted) {
+        setState(() => _backupBusy = false);
+      }
+    }
+  }
+
+  Future<void> _confirmDeleteAllData() async {
+    final t = AppLocalizations.of(context);
+    final keyword = t.t('delete_all_data_keyword');
+    final controller = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        var canDelete = false;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Text(t.t('delete_all_data')),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    t.t('delete_all_data_warning'),
+                    style: const TextStyle(fontSize: 12, height: 1.4),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: controller,
+                    autocorrect: false,
+                    textCapitalization: TextCapitalization.characters,
+                    onChanged: (value) => setDialogState(
+                      () => canDelete =
+                          value.trim().toUpperCase() == keyword,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: t.t('delete_all_data_hint'),
+                      border: const OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: Text(t.t('cancel')),
+                ),
+                FilledButton(
+                  onPressed: canDelete
+                      ? () => Navigator.pop(dialogContext, true)
+                      : null,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppUiTokens.dangerDeep,
+                  ),
+                  child: Text(t.t('delete')),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    controller.dispose();
+    if (confirmed != true) return;
+    if (!await _promptCurrentPin()) return;
+    if (!mounted) return;
+
+    final allowed = await BiometricLockService.instance
+        .authenticateForSensitiveAction(
+          reason: t.t('delete_all_data'),
+        );
+    if (!allowed || !mounted) return;
+
+    setState(() => _backupBusy = true);
+    try {
+      await DataResetService.instance.wipeAll();
+      await AuthService.instance.signOut();
+      if (!mounted) return;
+      _showAction(t.t('delete_all_data_done'));
+      Navigator.of(context).pushAndRemoveUntil(
+        AppAnimations.fadeSlideRoute(const AppLockGate()),
+        (_) => false,
+      );
+    } catch (e) {
+      await ErrorLogService.instance.log(source: 'delete_all_data', error: e);
+      if (!mounted) return;
+      _showAction('${t.t('delete_all_data_failed')}: $e');
     } finally {
       if (mounted) {
         setState(() => _backupBusy = false);

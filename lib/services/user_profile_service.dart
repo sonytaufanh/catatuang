@@ -57,6 +57,16 @@ class UserProfileService extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> reset() async {
+    _displayName = 'Pengguna';
+    _email = '';
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_keyDisplayName);
+    await prefs.remove(_keyEmail);
+    await prefs.remove(_keyMemberSince);
+    notifyListeners();
+  }
+
   Future<void> updateDisplayName(String value) async {
     await init();
     final next = _normalizeName(value);

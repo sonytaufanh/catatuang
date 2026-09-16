@@ -98,6 +98,20 @@ class BackupService {
     await prefs.setString(keyLastBackupAt, now.toIso8601String());
   }
 
+  /// Deletes the local backup and key export files (used by data wipe).
+  Future<void> deleteLocalBackup() async {
+    final backup = await _backupFile();
+    if (await backup.exists()) {
+      await backup.delete();
+    }
+    final keyFile = await _backupKeyFile();
+    if (await keyFile.exists()) {
+      await keyFile.delete();
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(keyLastBackupAt);
+  }
+
   Future<DateTime?> lastBackupAt() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(keyLastBackupAt);
